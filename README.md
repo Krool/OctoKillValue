@@ -3,12 +3,12 @@
 Expected gold per kill on creature tooltips, for Turtle WoW and OctoWoW
 (WoW 1.12 clients with the Turtle API).
 
-    Kill value              12s 40c
-      coins                     3s
-      Wool Cloth 37%         6s 20c
-      Small Lustrous Pearl 2%  2s 10c
-      rare drops (<0.1%)    +1s 80c
-      skinning              +1s 80c
+![Sewer Beast tooltip: Kill value 6s 6c, Pointy Crocolisk Tooth x1.0 (vendor) 3s 16c, Reinforced Steel Lockbox 2% (opened) 2s 90c](screenshots/tooltip-sewer-beast.png)
+
+Coins plus every drop weighted by its chance and stack, priced from the
+auction house, the vendor, or what a container holds when opened. Under
+the total: the top contributors with their source, a "rare drops" line
+for the sub-0.1% tail, and skinning value when you have the skill.
 
 `value = average coin drop + sum(drop chance x average stack x item price)`
 
