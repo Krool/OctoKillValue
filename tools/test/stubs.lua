@@ -113,3 +113,19 @@ function require(name)
   end
   return {}
 end
+
+-- zone lookup (pfQuest) - a tiny world: Dun Morogh holds Kobold Vermin and Flesh Eater, Onyxia's Lair holds Onyxia
+ZoneName = "Dun Morogh"
+function GetRealZoneText() return ZoneName end
+pfDB = {
+  zones = { loc = { [1] = "Dun Morogh", [2] = "Onyxia's Lair" } },
+  units = {
+    data = {
+      [6] = { coords = { { 50, 50, 1, 300 } } },
+      [3] = { coords = { { 40, 40, 1, 300 }, { 10, 10, 2, 300 } } },
+      [10184] = { coords = { { 50, 50, 2, 0 } } },
+      [999999] = { coords = { { 1, 1, 1, 0 } } },
+    },
+    loc = { [6] = "Kobold Vermin", [3] = "Flesh Eater", [10184] = "Onyxia" },
+  },
+}

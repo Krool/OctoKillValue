@@ -14,11 +14,15 @@ Expected gold per kill on creature tooltips, for WoW 1.12 (Turtle / OctoWoW).
   preservation database (github.com/Penqle/tortoise-wow): coin ranges,
   every loot row with its min/max stack, group and reference-loot
   semantics resolved the way the server rolls them.
-* **Prices** are the best of three sources per item:
-  * [aux-addon](https://github.com/shirsig/aux-addon)'s auction history
-    (the same "Value" it shows on item tooltips) minus the AH cut. Never
-    used for bind-on-pickup items. Random-suffix gear ("of the Bear") is
-    priced by the median of the suffix variants aux has seen.
+* **Prices** are read live from aux at hover time, so they follow your
+  auction scans with nothing to maintain. Each item takes the best of:
+  * [aux-addon](https://github.com/shirsig/aux-addon)'s auction history,
+    minus the AH cut: the lower median of aux's raw daily observations
+    (aux's own "Value" is a weighted median that picks the HIGHER of two
+    points, so one troll listing beside one real price wins there). Never
+    used for bind-on-pickup or poor-quality (grey) items. Random-suffix
+    gear ("of the Bear") is priced by the median of the suffix variants
+    aux has seen.
   * aux's disenchant estimate (off by default, `/okv de`), minus the cut.
   * the vendor sell price. Without aux this is all you get and the line
     says so. Quest items are a known 0.
@@ -41,6 +45,7 @@ recommended: aux-addon (prices), pfQuest (item names for uncached items).
 |---|---|
 | `/okv` or `/okv target` | print the breakdown for the current target |
 | `/okv id <creatureId>` | breakdown for any creature entry |
+| `/okv zone [n] [all]` | top n creatures in the current zone by kill value (needs pfQuest for spawn zones); non-elite unless `all`; shows level, rank and value per 1000 health |
 | `/okv toggle` | tooltip line on/off |
 | `/okv detail <n>` | number of top-contributor lines under the total (default 3) |
 | `/okv price value\|today` | aux source: weighted median (default) or today's min buyout |

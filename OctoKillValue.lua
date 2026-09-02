@@ -80,27 +80,53 @@ function OctoKillValue_ResetAux()
   computeCache = {}
 end
 
+-- aux's raw observations for a key: the pushed daily minimum buyouts plus
+-- today's, sorted ascending. Empty when aux has none.
+local function Observations(h, key)
+  local vals = {}
+  if type(h.data_points) == "function" then
+    local ok, pts = pcall(h.data_points, key)
+    if ok and type(pts) == "table" then
+      for _, p in ipairs(pts) do
+        if type(p) == "table" and type(p.value) == "number" then table.insert(vals, p.value) end
+      end
+    end
+  end
+  if type(h.market_value) == "function" then
+    local ok, today = pcall(h.market_value, key)
+    if ok and type(today) == "number" then table.insert(vals, today) end
+  end
+  table.sort(vals)
+  return vals
+end
+
 -- One aux history key ("id:suffix") -> trusted unit price or nil.
+-- aux's own value() is a weighted median that returns the HIGHER of two
+-- observations, so one troll listing next to one real price wins; we take
+-- the lower median of the raw observations instead (aux's value() only as
+-- a fallback when the raw points are unavailable).
 local function AuxKeyPrice(h, key)
-  local fn = (cfg.price == "today") and h.market_value or h.value
-  if type(fn) ~= "function" then return nil end
-  local ok, v = pcall(fn, key)
-  if not ok or type(v) ~= "number" or v <= 0 then return nil end
+  local v, days
+  if cfg.price == "today" then
+    if type(h.market_value) ~= "function" then return nil end
+    local ok, t = pcall(h.market_value, key)
+    if ok and type(t) == "number" then v = t end
+    days = v and 1 or 0
+  else
+    local vals = Observations(h, key)
+    days = table.getn(vals)
+    if days > 0 then
+      v = vals[math.floor((days + 1) / 2)]
+    elseif type(h.value) == "function" then
+      local ok, t = pcall(h.value, key)
+      if ok and type(t) == "number" then v = t end
+    end
+  end
+  if not v or v <= 0 then return nil end
   -- A lone sighting of an absurd buyout (one 166,000g listing seen once)
   -- would dominate every mob that can drop the item at 0.02%. Expensive
   -- prices must have been seen on several days before they count.
-  if v > cfg.trust and cfg.mindays > 1 then
-    local days = 0
-    if type(h.data_points) == "function" then
-      local ok2, pts = pcall(h.data_points, key)
-      if ok2 and type(pts) == "table" then days = table.getn(pts) end
-    end
-    if type(h.market_value) == "function" then
-      local ok3, today = pcall(h.market_value, key)
-      if ok3 and today then days = days + 1 end
-    end
-    if days < cfg.mindays then return nil end
-  end
+  if v > cfg.trust and cfg.mindays > 1 and days < cfg.mindays then return nil end
   return v
 end
 
@@ -176,7 +202,9 @@ local function Price(itemId, depth)
   if bind == 4 then return 0, "quest" end
   local net = 1 - (cfg.cut or 0) / 100
   local best, src = nil, nil
-  if bind ~= 1 then -- bind-on-pickup never reaches the auction house
+  -- bind-on-pickup never reaches the auction house; greys have no market
+  -- there (any aux value for one is a troll listing)
+  if bind ~= 1 and not (OKV_GREY and OKV_GREY[itemId]) then
     local ah = AuxPrice(itemId)
     if ah then best, src = ah * net, "ah" end
   end
@@ -228,18 +256,20 @@ local function GetMob(entry)
   if m ~= nil then return m or nil end
   local s = OKV_MOB and OKV_MOB[entry]
   if not s then mobCache[entry] = false; return nil end
-  local _, _, gold, drops, refs, skin = string.find(s, "^(%d*)|([^|]*)|([^|]*)|(.*)$")
+  local _, _, gold, drops, refs, skin, info = string.find(s, "^(%d*)|([^|]*)|([^|]*)|([^|]*)|?(.*)$")
   local gather = "S"
   if skin then
     local _, _, g, rest = string.find(skin, "^([HM]):(.*)$")
     if g then gather, skin = g, rest end
   end
+  local _, _, lvl, rank, hp = string.find(info or "", "^(%d+):(%d+):(%d+)$")
   m = {
     gold = tonumber(gold) or 0,
     drops = ParsePairs(drops),
     refs = ParsePairs(refs),
     skin = ParsePairs(skin),
     gather = gather,
+    lvl = tonumber(lvl), rank = tonumber(rank), hp = tonumber(hp),
   }
   mobCache[entry] = m
   return m
@@ -298,6 +328,7 @@ local function Compute(entry)
     if price then acc.skin = acc.skin + d[2] * price end
   end
   acc.total = acc.gold + acc.loot
+  acc.lvl, acc.rank, acc.hp = m.lvl, m.rank, m.hp
   local byValue = function(a, b) return a.value > b.value end
   table.sort(acc.top, byValue)
   table.sort(acc.raretop, byValue)
@@ -445,11 +476,13 @@ GameTooltip.SetUnit = function(self, unit)
 end
 
 -- ---------------------------------------------------------------- slash
+local RANK_TAG = { [1] = " elite", [2] = " rare-elite", [3] = " BOSS", [4] = " rare" }
 local function Report(entry, label)
   local acc = Compute(entry)
   if not acc then Print("no loot data for " .. label .. " (creature " .. entry .. ")"); return end
   Print(label .. " (creature " .. entry .. "): " .. Money(acc.total) .. " per kill"
-    .. (AuxHistory() and "" or " (vendor prices only)"))
+    .. (AuxHistory() and "" or " (vendor prices only)")
+    .. (acc.lvl and (" [L" .. acc.lvl .. (RANK_TAG[acc.rank or 0] or "") .. ", " .. (acc.hp or "?") .. " hp]") or ""))
   if acc.gold > 0 then Print("  coins: " .. Money(acc.gold)) end
   local n = 0
   for _, c in ipairs(acc.top) do
@@ -468,6 +501,48 @@ local function Report(entry, label)
   end
   if acc.skin > 0 then Print("  " .. GATHER[acc.gather] .. ": +" .. Money(acc.skin)) end
   if acc.unknown > 0 then Print("  " .. acc.unknown .. " drop(s) have no known price") end
+end
+
+-- Best farm targets in the current zone: creatures that pfQuest knows to
+-- spawn here, ranked by kill value. Level, rank and value per 1000 health
+-- let you weigh a 2g elite against a 40s wolf.
+
+local function ZoneReport(n, includeElite)
+  if not (pfDB and pfDB["zones"] and pfDB["zones"]["loc"] and pfDB["units"] and pfDB["units"]["data"]) then
+    Print("/okv zone needs pfQuest (creature spawn zones)"); return
+  end
+  local zoneName = GetRealZoneText and GetRealZoneText() or nil
+  local zid
+  for id, name in pairs(pfDB["zones"]["loc"]) do
+    if name == zoneName then zid = id; break end
+  end
+  if not zid then Print("unknown zone: " .. tostring(zoneName)); return end
+  local list = {}
+  for id, u in pairs(pfDB["units"]["data"]) do
+    if type(u) == "table" and type(u["coords"]) == "table" and OKV_MOB[id] then
+      local here = false
+      for _, c in ipairs(u["coords"]) do
+        if c[3] == zid then here = true; break end
+      end
+      if here then
+        local acc = Compute(id)
+        if acc and acc.total >= 1 and (includeElite or not acc.rank or acc.rank == 0) then
+          table.insert(list, { id = id, acc = acc })
+        end
+      end
+    end
+  end
+  table.sort(list, function(a, b) return a.acc.total > b.acc.total end)
+  local names = pfDB["units"]["loc"] or {}
+  Print(zoneName .. ": top " .. n .. " of " .. table.getn(list) .. " creatures by kill value"
+    .. (includeElite and "" or " (non-elite; /okv zone " .. n .. " all)"))
+  for i = 1, math.min(n, table.getn(list)) do
+    local e = list[i]
+    local acc = e.acc
+    local per = (acc.hp and acc.hp > 0) and ("  " .. Money(acc.total / acc.hp * 1000) .. "/1k hp") or ""
+    Print(format("  %s (L%s%s): %s%s", names[e.id] or ("creature " .. e.id), tostring(acc.lvl or "?"),
+      RANK_TAG[acc.rank or 0] or "", Money(acc.total), per))
+  end
 end
 
 local function Toggle(key, label)
@@ -504,6 +579,9 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
     local n = tonumber(arg)
     if n then cfg.mindays = math.floor(n); computeCache = {} end
     Print("aux prices above " .. Money(cfg.trust) .. " need " .. cfg.mindays .. " daily observation(s)")
+  elseif cmd == "zone" then
+    local _, _, num, rest = string.find(arg, "^(%d*)%s*(.*)$")
+    ZoneReport(tonumber(num) or 10, rest == "all")
   elseif cmd == "guid" then
     local exists, guid = UnitExists("target")
     Print("target guid: " .. tostring(guid) .. " -> creature " .. tostring(GuidEntry(guid))
@@ -515,7 +593,7 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
     elseif cmd == "target" then
       Print("no creature targeted")
     else
-      Print("/okv target | id <creatureId> | guid | toggle | detail <n> | price value|today | cut <pct> | rare <pct> | mindays <n> | skin | vendor | de | friendly")
+      Print("/okv target | id <creatureId> | zone [n] [all] | guid | toggle | detail <n> | price value|today | cut <pct> | rare <pct> | mindays <n> | skin | vendor | de | friendly")
       Print("aux: " .. (AuxHistory() and "connected" or "not found") .. ", tooltip "
         .. (cfg.enabled and "on" or "off") .. ", detail " .. cfg.detail .. ", price " .. cfg.price
         .. ", cut " .. cfg.cut .. "%, de " .. (cfg.de and "on" or "off"))

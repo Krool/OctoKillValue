@@ -26,7 +26,7 @@ local function copper(s)
 end
 local function parseData(entry)
   local s = OKV_MOB[entry]
-  local gold, drops, refs, skin = string.match(s, "^(%d*)|([^|]*)|([^|]*)|(.*)$")
+  local gold, drops, refs, skin = string.match(s, "^(%d*)|([^|]*)|([^|]*)|([^|]*)")
   local function pairsOf(str)
     local t = {}
     for id, q in string.gmatch(str, "(%d+):([%d%.e%-]+)") do t[tonumber(id)] = tonumber(q) end
@@ -44,6 +44,18 @@ local function hover(unit, guid, name, extra)
   FireEvent("UPDATE_MOUSEOVER_UNIT")
 end
 local KOBOLD = "0xF130000006000001"       -- creature 6
+local FLESH  = "0xF130000003000001"       -- creature 3 (Flesh Eater: world-drop pools)
+local function sellable(id) return not OKV_GREY[id] and OKV_BIND[id] ~= 1 and OKV_BIND[id] ~= 4 end
+-- first (ref, mult, item, qty) in a creature's pools whose item is sellable and whose
+-- per-kill expected qty satisfies pred
+local function poolItem(refs, pred)
+  for ref, mult in pairs(refs) do
+    for id, q in string.gmatch(OKV_REF[ref], "(%d+):([%d%.e%-]+)") do
+      id, q = tonumber(id), tonumber(q)
+      if sellable(id) and pred(q * mult) then return ref, mult, id, q end
+    end
+  end
+end
 local ONYXIA = "0xF1300027C8000002"       -- creature 10184 = 0x27C8
 
 -- boot
@@ -54,36 +66,36 @@ local okv = SlashCmdList["OCTOKILLVALUE"]
 check("slash command registered", type(okv) == "function")
 OctoKillValueDB.cut = 0 -- exact arithmetic below; the cut has its own check
 
--- ---- pure math via /okv id: aux knows only Linen Cloth, vendor floor off
+-- ---- pure math via /okv id: aux knows only Shiny Red Apple (white, 13.5%), vendor floor off
 local gold6, drops6, refs6 = parseData(6)
-local linenQty = drops6[755]
-check("Kobold Vermin data: coins and linen qty present", gold6 == 3 and linenQty and linenQty > 0.2)
-AuxPrices["755:0"] = 100
+local appleQty = drops6[4536]
+check("Kobold Vermin data: coins and apple qty present", gold6 == 3 and appleQty and appleQty > 0.1)
+AuxPrices["4536:0"] = 100
 OctoKillValueDB.vendor = false
 ChatLog = {}
 okv("id 6")
-local expected = gold6 + linenQty * 100
+local expected = gold6 + appleQty * 100
 check("total = coins + qty*price (" .. total() .. "c vs " .. expected .. ")", math.abs(total() - expected) <= 1)
-check("breakdown lists Linen with qty", chatHas("item:755 30%%") ~= nil)
+check("breakdown lists the apple with qty", chatHas("item:4536 13%%") ~= nil)
 check("unpriced drops are counted", chatHas("have no known price") ~= nil)
 
--- ---- reference pool expansion: price one item from ref 30017 only
+-- ---- reference pool expansion: price one sellable item from one of Flesh Eater's pools
 AuxPrices = {}
 OctoKillValue_ResetAux()
-local refMult = refs6[30017]
-local refItem, refQty
-for id, q in string.gmatch(OKV_REF[30017], "(%d+):([%d%.e%-]+)") do refItem, refQty = tonumber(id), tonumber(q); break end
+local gold3, drops3, refs3 = parseData(3)
+local refId, refMult, refItem, refQty = poolItem(refs3, function() return true end)
+check("Flesh Eater has a pool with a sellable item", refItem ~= nil and not drops3[refItem])
 AuxPrices[refItem .. ":0"] = 100000
-OctoKillValueDB.rare = 0 -- the pool entry is far below 0.1%; count it in the total here
+OctoKillValueDB.rare = 0 -- pool entries are far below 0.1%; count it in the total here
 ChatLog = {}
-okv("id 6")
+okv("id 3")
 OctoKillValueDB.rare = 0.001
-expected = gold6 + refMult * refQty * 100000
+expected = gold3 + refMult * refQty * 100000
 check("reference pool contributes mult*qty*price (" .. total() .. " vs " .. math.floor(expected + 0.5) .. ")",
   math.abs(total() - expected) <= 1)
 
 -- ---- vendor floor: vendor price above aux value wins; source tag shown
-local gold3, drops3 = parseData(3) -- Flesh Eater: Wool Cloth (33c vendor) at ~37%
+-- Flesh Eater: Wool Cloth (33c vendor) at ~37%
 local vendItem, vendQty
 for id, q in pairs(drops3) do
   if OKV_SELL[id] and OKV_SELL[id] > 1 and q > 0.01 and (not vendQty or q > vendQty) then vendItem, vendQty = id, q end
@@ -99,20 +111,20 @@ check("vendor floor raises a 1c aux value to the sell price, tagged (vendor)",
   vendLine ~= nil and math.abs(copper(string.match(vendLine, ": (.*)$")) - vendQty * OKV_SELL[vendItem]) <= 1)
 
 -- ---- AH cut applies to auction values only
-AuxPrices = { ["755:0"] = 1000 }
+AuxPrices = { ["4536:0"] = 1000 }
 OctoKillValue_ResetAux()
 OctoKillValueDB.vendor = false
 OctoKillValueDB.cut = 10
 ChatLog = {}
 okv("id 6")
-check("10% cut: total = coins + qty*900", math.abs(total() - (gold6 + linenQty * 900)) <= 1)
+check("10% cut: total = coins + qty*900", math.abs(total() - (gold6 + appleQty * 900)) <= 1)
 OctoKillValueDB.cut = 0
 
 -- ---- bind-on-pickup never takes an auction price; quest items are a known 0
 local _, dropsOny = parseData(10184)
 check("Onyxia head 18422 is bind-on-pickup in data", OKV_BIND[18422] == 1)
 AuxPrices = { ["18422:0"] = 100000000 } -- 10,000g "auction value" for a BoP head
-AuxDays["18422:0"] = { {}, {}, {} }
+AuxDays["18422:0"] = { { value = 100000000 }, { value = 100000000 }, { value = 100000000 } }
 OctoKillValue_ResetAux()
 OctoKillValueDB.vendor = false
 ChatLog = {}
@@ -124,12 +136,12 @@ if not questItem then for id, b in pairs(OKV_BIND) do if b == 4 then questItem =
 check("quest items exist in bind data", questItem ~= nil)
 
 -- ---- random-suffix aggregation: base id has no history, suffix keys do
-AuxPrices = { ["755:0"] = nil, ["755:12"] = 300, ["755:13"] = 100, ["755:14"] = 200 }
-AuxHistoryKeys = { ["755:12"] = "x", ["755:13"] = "x", ["755:14"] = "x", ["1:0"] = "x" }
+AuxPrices = { ["4536:0"] = nil, ["4536:12"] = 300, ["4536:13"] = 100, ["4536:14"] = 200 }
+AuxHistoryKeys = { ["4536:12"] = "x", ["4536:13"] = "x", ["4536:14"] = "x", ["1:0"] = "x" }
 OctoKillValue_ResetAux()
 ChatLog = {}
 okv("id 6")
-check("suffix variants priced by their median (200)", math.abs(total() - (gold6 + linenQty * 200)) <= 1)
+check("suffix variants priced by their median (200)", math.abs(total() - (gold6 + appleQty * 200)) <= 1)
 AuxHistoryKeys = {}
 
 -- ---- disenchant value (optional) beats vendor when higher
@@ -158,7 +170,7 @@ okv("id 10184")
 check("disenchant off by default -> no (DE) line", chatHas("%(DE%)") == nil)
 
 -- ---- tooltip: mouseover event adds lines once
-AuxPrices = { ["755:0"] = 100 }
+AuxPrices = { ["4536:0"] = 100 }
 OctoKillValue_ResetAux()
 OctoKillValueDB.vendor = false
 hover("mouseover", KOBOLD, "Kobold Vermin")
@@ -213,7 +225,7 @@ hover("mouseover", ONYXIA, "Onyxia")
 local sk = findLine("skinning")
 check("skinning line = 3 scales x 5g = 15g", sk ~= nil and string.find(sk, "15g") ~= nil)
 -- synthetic mining creature
-OKV_MOB[999999] = "0|||M:15410:1"
+OKV_MOB[999999] = "0|||M:15410:1|10:0:100"
 Skills = { "Skinning" }
 FireEvent("SKILL_LINES_CHANGED")
 hover("mouseover", "0xF1300F423F000001", "Rock thing") -- 0x0F423F = 999999
@@ -224,11 +236,11 @@ hover("mouseover", "0xF1300F423F000001", "Rock thing")
 check("mining loot shown for a miner", findLine("mining") ~= nil)
 
 -- compute cache: config change invalidates, time expiry too
-AuxPrices["755:0"] = 100
+AuxPrices["4536:0"] = 100
 OctoKillValue_ResetAux()
 hover("mouseover", KOBOLD, "Kobold Vermin")
 local before = findLine("^Kill value")
-AuxPrices["755:0"] = 10000
+AuxPrices["4536:0"] = 10000
 hover("mouseover", KOBOLD, "Kobold Vermin")
 check("result cached within 30s", findLine("^Kill value") == before)
 AdvanceTime(31)
@@ -253,37 +265,34 @@ check("without aux the line is tagged vendor only", kv ~= nil and string.find(kv
 AuxLoaded = true
 OctoKillValue_ResetAux()
 OctoKillValueDB.vendor = false
-local foror = nil
-for id, q in string.gmatch(OKV_REF[30017], "(%d+):([%d%.e%-]+)") do if tonumber(q) < 0.05 then foror = tonumber(id) end end
-if not foror then
-  for id, q in string.gmatch(select(2, string.match(OKV_MOB[6], "^(%d*)|([^|]*)|")), "(%d+):([%d%.e%-]+)") do
-    if tonumber(q) < 0.001 then foror = tonumber(id); break end
-  end
-end
-AuxPrices = { ["755:0"] = 100, [foror .. ":0"] = 1661992960 }
+-- a sellable world-drop below the 0.1% rare threshold (Foror's-like)
+local _, _, foror = poolItem(refs3, function(q) return q < 0.001 end)
+check("Flesh Eater has a sub-0.1% sellable world drop", foror ~= nil)
+AuxPrices = { [foror .. ":0"] = 1661992960 }
 AuxDays = {}
 ChatLog = {}
-okv("id 6")
-check("single-day 166kg price is ignored (total stays " .. total() .. "c)", total() <= 40)
-AuxDays[foror .. ":0"] = { {}, {} }
+okv("id 3")
+local base = gold3 + 5
+check("single-day 166kg price is ignored (total stays " .. total() .. "c)", total() <= base)
+AuxDays[foror .. ":0"] = { { value = 1661992960 }, { value = 1661992960 } }
 OctoKillValue_ResetAux()
 ChatLog = {}
-okv("id 6")
-check("two observations (one listing across midnight) still ignored", total() <= 40 and chatHas("rare drops") == nil)
-AuxDays[foror .. ":0"] = { {}, {}, {} }
+okv("id 3")
+check("two observations (one listing across midnight) still ignored", total() <= base and chatHas("rare drops") == nil)
+AuxDays[foror .. ":0"] = { { value = 1661992960 }, { value = 1661992960 }, { value = 1661992960 } }
 OctoKillValue_ResetAux()
 ChatLog = {}
-okv("id 6")
-check("three-day expensive price counts only in the rare line", total() <= 40 and chatHas("rare drops") ~= nil)
-hover("mouseover", KOBOLD, "Kobold Vermin")
+okv("id 3")
+check("three-day expensive price counts only in the rare line", total() <= base and chatHas("rare drops") ~= nil)
+hover("mouseover", FLESH, "Flesh Eater")
 kv = findLine("^Kill value")
 check("tooltip total excludes rare tail", kv ~= nil and string.find(kv, "g") == nil)
 check("tooltip shows rare line", findLine("rare drops") ~= nil)
-AuxPrices = { ["755:0"] = 100 }
+AuxPrices = { ["4536:0"] = 100 }
 AuxDays = {}
 OctoKillValue_ResetAux()
 hover("mouseover", KOBOLD, "Kobold Vermin")
-check("cheap single-day price still counts", findLine("item:755") ~= nil)
+check("cheap single-day price still counts", findLine("item:4536") ~= nil)
 
 -- ---- containers: a clam is worth its contents when that beats its own price
 OctoKillValueDB.cut = 0
@@ -309,6 +318,57 @@ OctoKillValue_ResetAux()
 ChatLog = {}
 okv("id " .. clamMob)
 check("clam's own auction price wins when higher", chatHas("item:5523 [^:]*%(opened%)") == nil and chatHas("item:5523") ~= nil)
+
+-- ---- greys never take an auction price (Cat Figurine 999g troll listing)
+check("Cat Figurine is grey in data", OKV_GREY[5329] == 1)
+AuxPrices = { ["5329:0"] = 9990000 }
+AuxDays["5329:0"] = { { value = 9990000 }, { value = 9990000 }, { value = 9990000 } }
+OctoKillValue_ResetAux()
+OctoKillValueDB.vendor = true
+ChatLog = {}
+okv("id 13359") -- Frostwolf Bowman: Cat Figurine at 99.7%
+local catLine = chatHas("item:5329 [^:]*: (.*)$")
+check("grey priced at vendor (15c) despite a 999g aux value",
+  catLine ~= nil and string.find(catLine, "%(vendor%)") ~= nil and copper(string.match(catLine, ": (.*)$")) <= 15)
+
+-- ---- lower median of raw observations beats aux's value()
+AuxPrices = { ["4536:0"] = 100000 } -- what aux's value() would say
+AuxDays["4536:0"] = { { value = 100 }, { value = 100000 } } -- one real, one troll
+OctoKillValueDB.vendor = false
+OctoKillValue_ResetAux()
+ChatLog = {}
+okv("id 6")
+check("two observations -> the lower one is used", math.abs(total() - (gold6 + appleQty * 100)) <= 1)
+AuxDays["4536:0"] = { { value = 100 }, { value = 200 }, { value = 100000 } }
+OctoKillValue_ResetAux()
+ChatLog = {}
+okv("id 6")
+check("three observations -> the middle one is used", math.abs(total() - (gold6 + appleQty * 200)) <= 1)
+AuxDays = {}
+
+-- ---- level/rank/health parsed from the fifth data segment
+ChatLog = {}
+okv("id 10184")
+check("report shows level, rank and health", chatHas("%[L63 BOSS, 1099230 hp%]") ~= nil)
+
+-- ---- /okv zone: creatures pfQuest places in the current zone, ranked
+AuxPrices = { ["4536:0"] = 100 }
+OctoKillValue_ResetAux()
+OctoKillValueDB.vendor = true
+ChatLog = {}
+okv("zone 5")
+check("zone report names the zone and counts creatures", chatHas("Dun Morogh: top 5 of 2 creatures") ~= nil)
+check("zone report lists Kobold Vermin with level", chatHas("Kobold Vermin %(L%d+%)") ~= nil)
+check("zone report shows value per 1k hp", chatHas("/1k hp") ~= nil)
+check("zone report excludes elites by default", chatHas("Onyxia") == nil)
+ZoneName = "Onyxia's Lair"
+ChatLog = {}
+okv("zone 5 all")
+check("zone ... all includes bosses", chatHas("Onyxia %(L63 BOSS%)") ~= nil)
+ZoneName = "Nowhere"
+ChatLog = {}
+okv("zone")
+check("unknown zone is reported", chatHas("unknown zone") ~= nil)
 
 -- /okv guid diagnostic
 Units.target = { guid = ONYXIA, name = "Onyxia" }
