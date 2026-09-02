@@ -28,7 +28,7 @@ const CACHE = path.join(__dirname, "sqlcache");
 const OUT = path.join(__dirname, "..", "Data.lua");
 const RAW = "https://raw.githubusercontent.com/Penqle/tortoise-wow/main/sql/base/tw_world_";
 const TABLES = ["creature_template", "creature_loot_template", "reference_loot_template",
-  "skinning_loot_template", "item_template"];
+  "skinning_loot_template", "item_loot_template", "item_template"];
 
 fs.mkdirSync(CACHE, { recursive: true });
 for (const t of TABLES) {
@@ -118,7 +118,8 @@ function loadLoot(table) {
 const creatureLoot = loadLoot("creature_loot_template");
 const refLoot = loadLoot("reference_loot_template");
 const skinLoot = loadLoot("skinning_loot_template");
-console.log("loot templates: creature", creatureLoot.size, "reference", refLoot.size, "skinning", skinLoot.size);
+const itemLoot = loadLoot("item_loot_template"); // openable containers: clams, lockboxes, bags of gems
+console.log("loot templates: creature", creatureLoot.size, "reference", refLoot.size, "skinning", skinLoot.size, "item", itemLoot.size);
 
 // Expected quantity per item for one processing of a template.
 // Returns Map(item -> expected count) plus Map(ref -> expected times) when
@@ -259,6 +260,25 @@ for (const ref of [...usedRefs].sort((a, b) => a - b)) {
   refLines.push("[" + ref + "]=\"" + encodeItems(ex.items, MIN_Q) + "\",");
 }
 
+// Containers among the droppable items: expected contents per opening.
+// Contents can themselves be containers, so iterate to a fixpoint.
+const itemLines = [];
+{
+  const queue = [...usedItems];
+  const seen = new Set();
+  while (queue.length) {
+    const id = queue.pop();
+    if (seen.has(id) || !itemLoot.has(id)) continue;
+    seen.add(id);
+    const ex = expand(itemLoot.get(id), true, 0);
+    const enc = encodeItems(ex.items, MIN_Q);
+    if (!enc) continue;
+    itemLines.push("[" + id + "]=\"" + enc + "\",");
+    for (const it of ex.items.keys()) { if (!usedItems.has(it)) { usedItems.add(it); queue.push(it); } }
+  }
+  itemLines.sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+}
+
 const sellLines = [], bindLines = [], deLines = [];
 let sellCount = 0;
 // inventory_type -> INVTYPE token (what GetItemInfo returns; aux's
@@ -292,6 +312,7 @@ const header = [
   "-- OKV_SELL[itemId]       = vendor sell price in copper (only items that can drop)",
   "-- OKV_BIND[itemId]       = 1 bind-on-pickup (never on the AH), 4 quest item (no value)",
   "-- OKV_DE[itemId]         = \"quality:itemLevel:INVTYPE\" for disenchantable gear",
+  "-- OKV_ITEM[containerId]  = \"item:expQty,...\" expected contents per opening (clams, lockboxes)",
   "-- skin segment prefix H: / M: = gathered with Herbalism / Mining, not Skinning",
   "-- expQty = drop probability x average stack size, per kill.",
   "-- Generated " + new Date().toISOString().slice(0, 10) + ": " + mobsWithData + " creatures, " +
@@ -303,8 +324,10 @@ const out = header.join("\n") +
   "OKV_REF={\n" + refLines.join("\n") + "\n}\n" +
   "OKV_SELL={\n" + sellLines.join("\n") + "\n}\n" +
   "OKV_BIND={\n" + bindLines.join("\n") + "\n}\n" +
-  "OKV_DE={\n" + deLines.join("\n") + "\n}\n";
+  "OKV_DE={\n" + deLines.join("\n") + "\n}\n" +
+  "OKV_ITEM={\n" + itemLines.join("\n") + "\n}\n";
 fs.writeFileSync(OUT, out);
 console.log("wrote " + OUT + ": " + mobsWithData + " creatures, " + refLines.length + " refs, " +
   sellCount + " sell prices, " + bindLines.length + " bound, " + deLines.length + " disenchantable, " +
+  itemLines.length + " containers, " +
   (out.length / 1024 / 1024).toFixed(2) + " MB");

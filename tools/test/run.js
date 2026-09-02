@@ -33,7 +33,7 @@ function section(name) {
   return data.slice(i, j);
 }
 const mob = section("OKV_MOB"), ref = section("OKV_REF"), sell = section("OKV_SELL");
-const bind = section("OKV_BIND"), de = section("OKV_DE");
+const bind = section("OKV_BIND"), de = section("OKV_DE"), item = section("OKV_ITEM");
 const count = (s) => (s.match(/^\[\d+\]=/gm) || []).length;
 console.log(`data: ${count(mob)} creatures, ${count(ref)} reference pools, ${count(sell)} sell prices, ${count(bind)} bound, ${count(de)} disenchantable`);
 if (count(mob) < 6000) { console.log("DATA FAIL: creature set suspiciously small"); failed = true; }
@@ -52,7 +52,10 @@ const need = [
   [sell, /^\[755\]=\d+,/m, "Linen Cloth sell price"],
   [bind, /^\[18422\]=1,/m, "Head of Onyxia bind-on-pickup"],
   [de, /^\[16846\]="4:66:INVTYPE_HEAD",/m, "Giantstalker's Helmet disenchant info"],
+  [item, /^\[5523\]="5503:1,5498:0\.05",/m, "Small Barnacled Clam contents"],
+  [item, /^\[7973\]="7974:1,/m, "Big-mouth Clam contents"],
 ];
+if ((item.match(/^\[\d+\]=/gm) || []).length < 20) { console.log("DATA FAIL: container set suspiciously small"); failed = true; }
 for (const [s, re, label] of need) {
   if (!re.test(s)) { console.log("DATA FAIL: sentinel missing: " + label); failed = true; }
 }

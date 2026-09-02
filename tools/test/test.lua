@@ -285,6 +285,31 @@ OctoKillValue_ResetAux()
 hover("mouseover", KOBOLD, "Kobold Vermin")
 check("cheap single-day price still counts", findLine("item:755") ~= nil)
 
+-- ---- containers: a clam is worth its contents when that beats its own price
+OctoKillValueDB.cut = 0
+OctoKillValueDB.vendor = false
+check("Small Barnacled Clam has baked contents", OKV_ITEM[5523] ~= nil and string.find(OKV_ITEM[5523], "5498:0%.05") ~= nil)
+-- a mob that drops clams: find one
+local clamMob, clamQty
+for id, s in pairs(OKV_MOB) do
+  local q = string.match(s, "^%d*|[^|]*[^%d]5523:([%d%.]+)") or string.match(s, "^%d*|5523:([%d%.]+)")
+  if q and type(id) == "number" and id < 999999 then clamMob, clamQty = id, tonumber(q); break end
+end
+check("some creature drops Small Barnacled Clams", clamMob ~= nil)
+AuxPrices = { ["5523:0"] = 10, ["5498:0"] = 20000, ["5503:0"] = 100 } -- clam 10c, pearl 2g, meat 1s
+OctoKillValue_ResetAux()
+ChatLog = {}
+okv("id " .. clamMob)
+local clamLine = chatHas("item:5523 [^:]*%(opened%): (.*)$")
+-- contents = 1 x 1s + 0.05 x 2g = 1s + 10s = 11s per clam
+check("clam priced as contents (11s each) with (opened) tag",
+  clamLine ~= nil and math.abs(copper(string.match(clamLine, ": (.*)$")) - clamQty * 1100) <= 1)
+AuxPrices["5523:0"] = 50000 -- someone pays 5g for clams: own price wins
+OctoKillValue_ResetAux()
+ChatLog = {}
+okv("id " .. clamMob)
+check("clam's own auction price wins when higher", chatHas("item:5523 [^:]*%(opened%)") == nil and chatHas("item:5523") ~= nil)
+
 -- /okv guid diagnostic
 Units.target = { guid = ONYXIA, name = "Onyxia" }
 ChatLog = {}

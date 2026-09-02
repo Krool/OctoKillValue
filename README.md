@@ -22,6 +22,9 @@ Expected gold per kill on creature tooltips, for WoW 1.12 (Turtle / OctoWoW).
   * aux's disenchant estimate (off by default, `/okv de`), minus the cut.
   * the vendor sell price. Without aux this is all you get and the line
     says so. Quest items are a known 0.
+  * for containers (clams, lockboxes, gem bags): the expected value of
+    the contents when opened, if that beats the container's own price.
+    Nested containers resolve three levels deep.
 * **Skinning** value is shown as a separate line when the character has the
   skill (it is not part of the kill total). Data marks herb and ore
   "skinning" tables too, but Turtle's database has none.

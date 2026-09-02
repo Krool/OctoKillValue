@@ -165,8 +165,13 @@ local function DisenchantValue(itemId)
 end
 
 -- Unit price in copper and its source, or nil when nothing is known.
--- Quest items are a known 0.
-local function Price(itemId)
+-- Quest items are a known 0. Containers (clams, lockboxes) are worth the
+-- better of their own price and their expected contents when opened.
+local ParsePairs -- forward declaration (defined in the data section)
+local contentsCache = {}
+
+local function Price(itemId, depth)
+  depth = depth or 0
   local bind = OKV_BIND and OKV_BIND[itemId]
   if bind == 4 then return 0, "quest" end
   local net = 1 - (cfg.cut or 0) / 100
@@ -181,6 +186,16 @@ local function Price(itemId)
     local vendor = OKV_SELL[itemId]
     if not best or vendor > best then best, src = vendor, "vendor" end
   end
+  if OKV_ITEM and OKV_ITEM[itemId] and depth < 3 then
+    local list = contentsCache[itemId]
+    if not list then list = ParsePairs(OKV_ITEM[itemId]); contentsCache[itemId] = list end
+    local sum, any = 0, false
+    for _, d in ipairs(list) do
+      local p = Price(d[1], depth + 1)
+      if p then sum = sum + d[2] * p; any = true end
+    end
+    if any and (not best or sum > best) then best, src = sum, "opened" end
+  end
   return best, src
 end
 
@@ -188,7 +203,7 @@ end
 local mobCache = {}   -- entry -> parsed record (false = no data)
 local refCache = {}   -- refId -> { {id, qty}, ... }
 
-local function ParsePairs(s)
+ParsePairs = function(s)
   local list = {}
   if not s or s == "" then return list end
   for id, q in string.gfind(s, "(%d+):([%d%.e%-]+)") do
@@ -320,7 +335,7 @@ local function FmtQty(q)
   return format("%.2f%%", q * 100)
 end
 
-local SRC_TAG = { vendor = " (vendor)", de = " (DE)", quest = " (quest)", ah = "" }
+local SRC_TAG = { vendor = " (vendor)", de = " (DE)", quest = " (quest)", opened = " (opened)", ah = "" }
 
 local skillCache = {}
 local function HasSkill(skillName)
