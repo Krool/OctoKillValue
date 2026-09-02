@@ -296,7 +296,7 @@ local function ParseMob(s)
     if g then gather, skin = g, rest end
   end
   local _, _, lvl, rank, hp = string.find(info or "", "^(%d+):(%d+):(%d+)$")
-  m = {
+  local m = {
     gold = tonumber(gold) or 0,
     drops = ParsePairs(drops),
     refs = ParsePairs(refs),
@@ -600,11 +600,16 @@ local function ZoneValue(entry, includeElite)
   if m == nil then
     local s = OKV_MOB and OKV_MOB[entry]
     if not s then return nil end
+    -- rank sits in the trailing lvl:rank:hp segment: peek at it before
+    -- parsing the loot tables so excluded elites cost one string.find
+    if not includeElite then
+      local _, _, rank = string.find(s, "|%d+:(%d+):%d+$")
+      if rank and rank ~= "0" then return nil end
+    end
     m = ParseMob(s)
   elseif not m then
     return nil
   end
-  -- rank is known before any pricing: skip elites up front when excluded
   if not includeElite and m.rank and m.rank ~= 0 then return nil end
   local qty = {}
   for _, d in ipairs(m.drops) do qty[d[1]] = (qty[d[1]] or 0) + d[2] end
