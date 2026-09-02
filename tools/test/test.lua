@@ -388,7 +388,7 @@ do
   local other
   for id, s in pairs(OKV_MOB) do
     local _, _, drops = string.find(s, "^%d*|([^|]*)|")
-    if id ~= 6 and drops and string.find(drops, "^4536:") or (drops and string.find(drops, ",4536:")) then other = id; break end
+    if id ~= 6 and drops and (string.find(drops, "^4536:") or string.find(drops, ",4536:")) then other = id; break end
   end
   check("a second creature dropping item 4536 exists in data", other ~= nil)
   okv("id 6")
@@ -399,11 +399,12 @@ do
   require = origRequire
   OctoKillValue_ResetAux()
 end
--- (2) a zone report forces garbage collection every 20 creatures
+-- (2) a zone report collects garbage as the heap grows (gcinfo), else every 20 creatures
 do
   local gcCalls = 0
-  local origGC = collectgarbage
+  local origGC, origInfo = collectgarbage, gcinfo
   collectgarbage = function(...) gcCalls = gcCalls + 1 end
+  gcinfo = nil
   local savedData = pfDB.units.data
   local big = {}
   local n = 0
@@ -416,9 +417,17 @@ do
   ZoneName = "Dun Morogh"
   ChatLog = {}
   okv("zone 3")
+  check("zone report without gcinfo sweeps every 20 creatures (" .. gcCalls .. " calls over 45)", gcCalls == 2)
+  -- with gcinfo: heap grows 1 MB per creature -> a sweep every 5th creature (4 MB budget)
+  gcCalls = 0
+  local kb = 0
+  gcinfo = function() kb = kb + 1024; return kb end
+  OctoKillValue_ResetAux()
+  ChatLog = {}
+  okv("zone 3")
   pfDB.units.data = savedData
-  collectgarbage = origGC
-  check("zone report collects garbage periodically (" .. gcCalls .. " calls over 45 creatures)", gcCalls == 2)
+  collectgarbage, gcinfo = origGC, origInfo
+  check("zone report with gcinfo sweeps when the heap grows past the budget (" .. gcCalls .. " calls over 45)", gcCalls >= 7 and gcCalls <= 11)
 end
 
 -- ---- requirements: login summary, status, missing-guid client

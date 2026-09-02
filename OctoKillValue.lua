@@ -577,6 +577,8 @@ end
 -- spawn here, ranked by kill value. Level, rank and value per 1000 health
 -- let you weigh a 2g elite against a 40s wolf.
 
+local GC_BUDGET_KB = 4096
+
 local function ZoneReport(n, includeElite)
   if not (pfDB and pfDB["zones"] and pfDB["zones"]["loc"] and pfDB["units"] and pfDB["units"]["data"]) then
     Print("/okv zone needs pfQuest (creature spawn zones)"); return
@@ -588,7 +590,12 @@ local function ZoneReport(n, includeElite)
   end
   if not zid then Print("unknown zone: " .. tostring(zoneName)); return end
   local list = {}
+  -- the 1.12 client crashes (lmemPool.cpp) when a burst of garbage outruns
+  -- its collector, and a whole zone is such a burst. Collect whenever the
+  -- Lua heap has grown by GC_BUDGET_KB since the last sweep (gcinfo() is
+  -- KB in use); without gcinfo fall back to a sweep every 20 creatures.
   local computed = 0
+  local gcBase = gcinfo and gcinfo() or 0
   for id, u in pairs(pfDB["units"]["data"]) do
     if type(u) == "table" and type(u["coords"]) == "table" and OKV_MOB[id] then
       local here = false
@@ -596,10 +603,14 @@ local function ZoneReport(n, includeElite)
         if c[3] == zid then here = true; break end
       end
       if here then
-        -- the 1.12 client crashes (lmemPool.cpp) when a burst of garbage
-        -- outruns its collector; a whole zone is such a burst
         computed = computed + 1
-        if math.mod(computed, 20) == 0 and collectgarbage then collectgarbage() end
+        if collectgarbage then
+          if gcinfo then
+            if gcinfo() - gcBase > GC_BUDGET_KB then collectgarbage(); gcBase = gcinfo() end
+          elseif math.mod(computed, 20) == 0 then
+            collectgarbage()
+          end
+        end
         local acc = Compute(id)
         if acc and acc.total >= 1 and (includeElite or not acc.rank or acc.rank == 0) then
           table.insert(list, { id = id, acc = acc })
