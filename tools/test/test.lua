@@ -414,11 +414,12 @@ do
     if n >= 45 then break end
   end
   pfDB.units.data = big
+  OctoKillValue_ResetAux() -- drops the cached zone index built from the small world
   ZoneName = "Dun Morogh"
   ChatLog = {}
   okv("zone 3")
-  check("zone report without gcinfo sweeps every 20 creatures (" .. gcCalls .. " calls over 45)", gcCalls == 2)
-  -- with gcinfo: heap grows 1 MB per creature -> a sweep every 5th creature (4 MB budget)
+  check("zone report without gcinfo sweeps every 20 creatures + once at the end (" .. gcCalls .. " calls over 45)", gcCalls == 3)
+  -- with gcinfo: heap grows 1 MB per gcinfo() call -> a sweep roughly every 2nd creature (2 MB budget)
   gcCalls = 0
   local kb = 0
   gcinfo = function() kb = kb + 1024; return kb end
@@ -427,7 +428,8 @@ do
   okv("zone 3")
   pfDB.units.data = savedData
   collectgarbage, gcinfo = origGC, origInfo
-  check("zone report with gcinfo sweeps when the heap grows past the budget (" .. gcCalls .. " calls over 45)", gcCalls >= 7 and gcCalls <= 11)
+  OctoKillValue_ResetAux()
+  check("zone report with gcinfo sweeps when the heap grows past the budget (" .. gcCalls .. " calls over 45)", gcCalls >= 12 and gcCalls <= 20)
 end
 
 -- ---- requirements: login summary, status, missing-guid client

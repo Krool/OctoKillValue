@@ -9,6 +9,9 @@ format = string.format
 function getglobal(name) return _G[name] end
 local now = 1000
 function GetTime() return now end
+-- fengari has no collector hook; the client has both of these (Lua 5.0)
+collectgarbage = function() end
+gcinfo = nil
 function AdvanceTime(s) now = now + s end
 
 -- chat

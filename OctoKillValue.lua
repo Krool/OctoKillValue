@@ -82,10 +82,14 @@ end
 -- Re-detect aux (e.g. after it loads late); also used by the test harness.
 local suffixIndex = nil
 local computeCache = {}
-local priceCache = {}   -- itemId -> { t, price, src } (30s, see CACHE_TTL)
+-- price cache as three flat maps (one table per entry was itself memory
+-- pressure on the client's fixed Lua pool during a zone report)
+local priceT, priceP, priceS = {}, {}, {}   -- itemId -> time / price / source (30s, see CACHE_TTL)
+local zoneIndex = {}   -- zone id -> creature ids with data (see ZoneCreatures)
 local function ClearCaches()
   computeCache = {}
-  priceCache = {}
+  priceT, priceP, priceS = {}, {}, {}
+  zoneIndex = {}
 end
 function OctoKillValue_ResetAux()
   auxModules = {}
@@ -210,7 +214,9 @@ end
 local ParsePairs -- forward declaration (defined in the data section)
 local contentsCache = {}
 
-local CACHE_TTL = 30
+local CACHE_TTL = 30        -- per-creature breakdowns (tooltips)
+local PRICE_TTL = 30        -- per-item prices; same horizon so a fresh AH scan
+                            -- reaches tooltips within 30s (tested)
 
 local PriceUncached
 -- Cached per item (top level only - container contents are priced with a
@@ -220,10 +226,10 @@ local PriceUncached
 local function Price(itemId, depth)
   if depth and depth > 0 then return PriceUncached(itemId, depth) end
   local now = GetTime and GetTime() or 0
-  local hit = priceCache[itemId]
-  if hit and now - hit.t < CACHE_TTL then return hit.price, hit.src end
+  local t = priceT[itemId]
+  if t and now - t < PRICE_TTL then return priceP[itemId], priceS[itemId] end
   local price, src = PriceUncached(itemId, 0)
-  priceCache[itemId] = { t = now, price = price, src = src }
+  priceT[itemId], priceP[itemId], priceS[itemId] = now, price, src
   return price, src
 end
 
@@ -282,11 +288,7 @@ end
 local GATHER = { S = "skinning", H = "herbalism", M = "mining" }
 local GATHER_SKILL = { S = "Skinning", H = "Herbalism", M = "Mining" }
 
-local function GetMob(entry)
-  local m = mobCache[entry]
-  if m ~= nil then return m or nil end
-  local s = OKV_MOB and OKV_MOB[entry]
-  if not s then mobCache[entry] = false; return nil end
+local function ParseMob(s)
   local _, _, gold, drops, refs, skin, info = string.find(s, "^(%d*)|([^|]*)|([^|]*)|([^|]*)|?(.*)$")
   local gather = "S"
   if skin then
@@ -302,6 +304,15 @@ local function GetMob(entry)
     gather = gather,
     lvl = tonumber(lvl), rank = tonumber(rank), hp = tonumber(hp),
   }
+  return m
+end
+
+local function GetMob(entry)
+  local m = mobCache[entry]
+  if m ~= nil then return m or nil end
+  local s = OKV_MOB and OKV_MOB[entry]
+  if not s then mobCache[entry] = false; return nil end
+  m = ParseMob(s)
   mobCache[entry] = m
   return m
 end
@@ -577,7 +588,56 @@ end
 -- spawn here, ranked by kill value. Level, rank and value per 1000 health
 -- let you weigh a 2g elite against a 40s wolf.
 
-local GC_BUDGET_KB = 4096
+local GC_BUDGET_KB = 2048
+
+-- Kill value for the zone report only: same total as Compute() (coins +
+-- non-rare loot) but RETAINS NOTHING - no compute-cache entry, no mob-cache
+-- entry, no per-item tables. A zone is 100-200 creatures; caching each
+-- one's full breakdown for 30s is what pushed Mulgore over the client's
+-- fixed Lua pool (lmemPool.cpp crash, 2026-09-02) even with periodic GC.
+local function ZoneValue(entry, includeElite)
+  local m = mobCache[entry]
+  if m == nil then
+    local s = OKV_MOB and OKV_MOB[entry]
+    if not s then return nil end
+    m = ParseMob(s)
+  elseif not m then
+    return nil
+  end
+  -- rank is known before any pricing: skip elites up front when excluded
+  if not includeElite and m.rank and m.rank ~= 0 then return nil end
+  local qty = {}
+  for _, d in ipairs(m.drops) do qty[d[1]] = (qty[d[1]] or 0) + d[2] end
+  for _, r in ipairs(m.refs) do
+    for _, d in ipairs(GetRef(r[1])) do qty[d[1]] = (qty[d[1]] or 0) + d[2] * r[2] end
+  end
+  local loot = 0
+  for id, q in pairs(qty) do
+    if q >= cfg.rare then
+      local p = Price(id)
+      if p then loot = loot + q * p end
+    end
+  end
+  return m.gold + loot, m.lvl, m.rank, m.hp
+end
+
+-- pfQuest's unit table is every creature on the server; walking it (and every
+-- spawn row) per report is the second-largest cost, so remember each zone's
+-- creature ids after the first run.
+local function ZoneCreatures(zid)
+  local ids = zoneIndex[zid]
+  if ids then return ids end
+  ids = {}
+  for id, u in pairs(pfDB["units"]["data"]) do
+    if type(u) == "table" and type(u["coords"]) == "table" and OKV_MOB[id] then
+      for _, c in ipairs(u["coords"]) do
+        if c[3] == zid then table.insert(ids, id); break end
+      end
+    end
+  end
+  zoneIndex[zid] = ids
+  return ids
+end
 
 local function ZoneReport(n, includeElite)
   if not (pfDB and pfDB["zones"] and pfDB["zones"]["loc"] and pfDB["units"] and pfDB["units"]["data"]) then
@@ -596,39 +656,32 @@ local function ZoneReport(n, includeElite)
   -- KB in use); without gcinfo fall back to a sweep every 20 creatures.
   local computed = 0
   local gcBase = gcinfo and gcinfo() or 0
-  for id, u in pairs(pfDB["units"]["data"]) do
-    if type(u) == "table" and type(u["coords"]) == "table" and OKV_MOB[id] then
-      local here = false
-      for _, c in ipairs(u["coords"]) do
-        if c[3] == zid then here = true; break end
-      end
-      if here then
-        computed = computed + 1
-        if collectgarbage then
-          if gcinfo then
-            if gcinfo() - gcBase > GC_BUDGET_KB then collectgarbage(); gcBase = gcinfo() end
-          elseif math.mod(computed, 20) == 0 then
-            collectgarbage()
-          end
-        end
-        local acc = Compute(id)
-        if acc and acc.total >= 1 and (includeElite or not acc.rank or acc.rank == 0) then
-          table.insert(list, { id = id, acc = acc })
-        end
+  for _, id in ipairs(ZoneCreatures(zid)) do
+    computed = computed + 1
+    if collectgarbage then
+      if gcinfo then
+        if gcinfo() - gcBase > GC_BUDGET_KB then collectgarbage(); gcBase = gcinfo() end
+      elseif math.mod(computed, 20) == 0 then
+        collectgarbage()
       end
     end
+    local total, lvl, rank, hp = ZoneValue(id, includeElite)
+    if total and total >= 1 and (includeElite or not rank or rank == 0) then
+      table.insert(list, { id = id, total = total, lvl = lvl, rank = rank, hp = hp })
+    end
   end
-  table.sort(list, function(a, b) return a.acc.total > b.acc.total end)
+  table.sort(list, function(a, b) return a.total > b.total end)
   local names = pfDB["units"]["loc"] or {}
   Print(zoneName .. ": top " .. n .. " of " .. table.getn(list) .. " creatures by kill value"
     .. (includeElite and "" or " (non-elite; /okv zone " .. n .. " all)"))
   for i = 1, math.min(n, table.getn(list)) do
     local e = list[i]
-    local acc = e.acc
-    local per = (acc.hp and acc.hp > 0) and ("  " .. Money(acc.total / acc.hp * 1000) .. "/1k hp") or ""
-    Print(format("  %s (L%s%s): %s%s", names[e.id] or ("creature " .. e.id), tostring(acc.lvl or "?"),
-      RANK_TAG[acc.rank or 0] or "", Money(acc.total), per))
+    local per = (e.hp and e.hp > 0) and ("  " .. Money(e.total / e.hp * 1000) .. "/1k hp") or ""
+    Print(format("  %s (L%s%s): %s%s", names[e.id] or ("creature " .. e.id), tostring(e.lvl or "?"),
+      RANK_TAG[e.rank or 0] or "", Money(e.total), per))
   end
+  if collectgarbage then collectgarbage() end
+  if gcinfo then Print(format("  (Lua heap %d KB in use after the report)", gcinfo())) end
 end
 
 local function Toggle(key, label)
@@ -674,6 +727,11 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
       .. (GuidEntry(guid) and OKV_MOB[GuidEntry(guid)] and " (has data)" or " (no data)"))
   elseif cmd == "status" then
     Status(true)
+  elseif cmd == "mem" then
+    if gcinfo then
+      local used, threshold = gcinfo()
+      Print(format("Lua heap: %d KB in use, next automatic sweep at %s KB", used, tostring(threshold)))
+    else Print("gcinfo() unavailable") end
   elseif cmd == "hello" then Toggle("hello", "login message")
   elseif cmd == "config" then
     for _, k in ipairs(SETTING_ORDER) do
@@ -699,7 +757,7 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
       Print("  /okv id <creatureId>     breakdown for any creature")
       Print("  /okv zone [n] [all]      best farm targets in this zone (needs pfQuest)")
       Print("  /okv config | reset      show all settings / restore defaults")
-      Print("  /okv status | guid       requirement check / target guid diagnostic")
+      Print("  /okv status | guid | mem requirement check / target guid / Lua heap use")
       Print("  /okv toggle | detail <n> | price value|today | cut <pct> | rare <pct> | mindays <n>")
       Print("  /okv vendor | de | skin | friendly | hello    (on/off switches)")
       Status(false)
