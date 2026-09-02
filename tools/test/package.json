@@ -1,0 +1,12 @@
+{
+  "name": "octokillvalue-tests",
+  "private": true,
+  "description": "Test harness for OctoKillValue: runs the addon Lua under a stubbed WoW 1.12 + aux environment (fengari) and validates Data.lua.",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "devDependencies": {
+    "fengari": "^0.1.4",
+    "luaparse": "^0.3.1"
+  }
+}

@@ -1,0 +1,4 @@
+.claude/
+tools/sqlcache/
+tools/test/node_modules/
+tools/test/package-lock.json

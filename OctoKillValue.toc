@@ -1,0 +1,10 @@
+## Interface: 11200
+## Title: OctoKillValue
+## Notes: Expected gold per kill on mob tooltips: coins + drop table x aux-addon auction values.
+## Author: Krool
+## Version: 1
+## OptionalDeps: aux-addon, pfQuest, pfQuest-octo
+## SavedVariables: OctoKillValueDB
+
+Data.lua
+OctoKillValue.lua
