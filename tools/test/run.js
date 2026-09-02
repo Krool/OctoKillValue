@@ -33,11 +33,14 @@ function section(name) {
   return data.slice(i, j);
 }
 const mob = section("OKV_MOB"), ref = section("OKV_REF"), sell = section("OKV_SELL");
+const bind = section("OKV_BIND"), de = section("OKV_DE");
 const count = (s) => (s.match(/^\[\d+\]=/gm) || []).length;
-console.log(`data: ${count(mob)} creatures, ${count(ref)} reference pools, ${count(sell)} sell prices`);
+console.log(`data: ${count(mob)} creatures, ${count(ref)} reference pools, ${count(sell)} sell prices, ${count(bind)} bound, ${count(de)} disenchantable`);
 if (count(mob) < 6000) { console.log("DATA FAIL: creature set suspiciously small"); failed = true; }
 if (count(ref) < 500) { console.log("DATA FAIL: reference set suspiciously small"); failed = true; }
 if (count(sell) < 7000) { console.log("DATA FAIL: sell-price set suspiciously small"); failed = true; }
+if (count(bind) < 2000) { console.log("DATA FAIL: bind set suspiciously small"); failed = true; }
+if (count(de) < 5000) { console.log("DATA FAIL: disenchant set suspiciously small"); failed = true; }
 // sentinels: Kobold Vermin (6) drops Linen (755) and points at world-drop ref 30017;
 // Onyxia (10184) drops her head (18422) at 100% and skins into scales (15410).
 const need = [
@@ -47,6 +50,8 @@ const need = [
   [mob, /^\[10184\]="[^"]*\|15410:3"/m, "Onyxia skinning scales x3"],
   [ref, /^\[30017\]="\d+:/m, "ref pool 30017 present"],
   [sell, /^\[755\]=\d+,/m, "Linen Cloth sell price"],
+  [bind, /^\[18422\]=1,/m, "Head of Onyxia bind-on-pickup"],
+  [de, /^\[16846\]="4:66:INVTYPE_HEAD",/m, "Giantstalker's Helmet disenchant info"],
 ];
 for (const [s, re, label] of need) {
   if (!re.test(s)) { console.log("DATA FAIL: sentinel missing: " + label); failed = true; }

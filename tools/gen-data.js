@@ -184,9 +184,30 @@ for (const r of rows(ct.sql, "creature_template")) {
     gold: (+r[ct.idx.gold_min] + +r[ct.idx.gold_max]) / 2,
     lootId: +r[ct.idx.loot_id],
     skinId: +r[ct.idx.skinning_loot_id],
+    typeFlags: +r[ct.idx.type_flags],
   });
 }
 console.log("creatures:", mobs.size);
+
+// ---- item classes (for gather-type detection) ------------------------------
+// Turtle's creature_template does not carry the HERBLOOT/MININGLOOT type
+// flags, so classify a "skinning" template by what it yields:
+// trade goods subclass 9 = Herb, 7 = Metal & Stone, 6 = Leather.
+const it = load("item_template");
+const itemKind = new Map();
+for (const r of rows(it.sql, "item_template")) {
+  if (+r[it.idx.class] === 7) itemKind.set(+r[it.idx.entry], +r[it.idx.subclass]);
+}
+function gatherPrefix(items) {
+  let herb = 0, ore = 0, other = 0;
+  for (const [id, q] of items) {
+    const k = itemKind.get(id);
+    if (k === 9) herb += q; else if (k === 7) ore += q; else other += q;
+  }
+  if (herb > ore && herb > other) return "H:";
+  if (ore > herb && ore > other) return "M:";
+  return "";
+}
 
 // ---- assemble --------------------------------------------------------------
 function fmt(n) {
@@ -223,6 +244,7 @@ for (const [entry, m] of [...mobs].sort((a, b) => a[0] - b[0])) {
     const ex = expand(skinLoot.get(m.skinId), true, 0);
     skin = encodeItems(ex.items, MIN_Q);
     for (const it of ex.items.keys()) usedItems.add(it);
+    if (skin) skin = gatherPrefix(ex.items) + skin;
   }
   const gold = Math.round(m.gold);
   if (!gold && !drops && !refs && !skin) continue;
@@ -237,16 +259,29 @@ for (const ref of [...usedRefs].sort((a, b) => a - b)) {
   refLines.push("[" + ref + "]=\"" + encodeItems(ex.items, MIN_Q) + "\",");
 }
 
-const it = load("item_template");
-const sellLines = [];
+const sellLines = [], bindLines = [], deLines = [];
 let sellCount = 0;
+// inventory_type -> INVTYPE token (what GetItemInfo returns; aux's
+// disenchant module keys its slot filter on these)
+const INVTYPE = ["", "INVTYPE_HEAD", "INVTYPE_NECK", "INVTYPE_SHOULDER", "INVTYPE_BODY", "INVTYPE_CHEST",
+  "INVTYPE_WAIST", "INVTYPE_LEGS", "INVTYPE_FEET", "INVTYPE_WRIST", "INVTYPE_HAND", "INVTYPE_FINGER",
+  "INVTYPE_TRINKET", "INVTYPE_WEAPON", "INVTYPE_SHIELD", "INVTYPE_RANGED", "INVTYPE_CLOAK", "INVTYPE_2HWEAPON",
+  "INVTYPE_BAG", "INVTYPE_TABARD", "INVTYPE_ROBE", "INVTYPE_WEAPONMAINHAND", "INVTYPE_WEAPONOFFHAND",
+  "INVTYPE_HOLDABLE", "INVTYPE_AMMO", "INVTYPE_THROWN", "INVTYPE_RANGEDRIGHT", "INVTYPE_QUIVER", "INVTYPE_RELIC"];
 for (const r of rows(it.sql, "item_template")) {
   const id = +r[it.idx.entry];
   if (!usedItems.has(id)) continue;
   const sell = +r[it.idx.sell_price];
-  if (!sell) continue;
-  sellLines.push("[" + id + "]=" + sell + ",");
-  sellCount++;
+  if (sell) { sellLines.push("[" + id + "]=" + sell + ","); sellCount++; }
+  // bonding: 1 = bind on pickup (no auction), 4 = quest item (no value at all)
+  const bonding = +r[it.idx.bonding];
+  if (bonding === 1 || bonding === 4) bindLines.push("[" + id + "]=" + bonding + ",");
+  // disenchantable gear (weapon class 2 / armor class 4, uncommon+): quality,
+  // item level, slot - so the disenchant estimate works for uncached items
+  const cls = +r[it.idx.class], quality = +r[it.idx.quality];
+  if ((cls === 2 || cls === 4) && quality >= 2 && quality <= 4) {
+    deLines.push("[" + id + "]=\"" + quality + ":" + r[it.idx.item_level] + ":" + (INVTYPE[+r[it.idx.inventory_type]] || "") + "\",");
+  }
 }
 
 const header = [
@@ -255,15 +290,21 @@ const header = [
   "-- OKV_MOB[creatureEntry] = \"avgCopper|item:expQty,...|refId:expTimes,...|skinItem:expQty,...\"",
   "-- OKV_REF[refId]         = \"item:expQty,...\"   (reference_loot_template, fully flattened)",
   "-- OKV_SELL[itemId]       = vendor sell price in copper (only items that can drop)",
+  "-- OKV_BIND[itemId]       = 1 bind-on-pickup (never on the AH), 4 quest item (no value)",
+  "-- OKV_DE[itemId]         = \"quality:itemLevel:INVTYPE\" for disenchantable gear",
+  "-- skin segment prefix H: / M: = gathered with Herbalism / Mining, not Skinning",
   "-- expQty = drop probability x average stack size, per kill.",
   "-- Generated " + new Date().toISOString().slice(0, 10) + ": " + mobsWithData + " creatures, " +
-    refLines.length + " reference pools, " + sellCount + " sell prices.",
+    refLines.length + " reference pools, " + sellCount + " sell prices, " + bindLines.length + " bound, " + deLines.length + " disenchantable.",
   "",
 ];
 const out = header.join("\n") +
   "OKV_MOB={\n" + mobLines.join("\n") + "\n}\n" +
   "OKV_REF={\n" + refLines.join("\n") + "\n}\n" +
-  "OKV_SELL={\n" + sellLines.join("\n") + "\n}\n";
+  "OKV_SELL={\n" + sellLines.join("\n") + "\n}\n" +
+  "OKV_BIND={\n" + bindLines.join("\n") + "\n}\n" +
+  "OKV_DE={\n" + deLines.join("\n") + "\n}\n";
 fs.writeFileSync(OUT, out);
 console.log("wrote " + OUT + ": " + mobsWithData + " creatures, " + refLines.length + " refs, " +
-  sellCount + " sell prices, " + (out.length / 1024 / 1024).toFixed(2) + " MB");
+  sellCount + " sell prices, " + bindLines.length + " bound, " + deLines.length + " disenchantable, " +
+  (out.length / 1024 / 1024).toFixed(2) + " MB");

@@ -14,12 +14,18 @@ Expected gold per kill on creature tooltips, for WoW 1.12 (Turtle / OctoWoW).
   preservation database (github.com/Penqle/tortoise-wow): coin ranges,
   every loot row with its min/max stack, group and reference-loot
   semantics resolved the way the server rolls them.
-* **Prices** come from [aux-addon](https://github.com/shirsig/aux-addon)'s
-  auction history (the same "Value" it shows on item tooltips), raised to
-  the vendor sell price when that is higher. Without aux the vendor price
-  alone is used and the line says so.
+* **Prices** are the best of three sources per item:
+  * [aux-addon](https://github.com/shirsig/aux-addon)'s auction history
+    (the same "Value" it shows on item tooltips) minus the AH cut. Never
+    used for bind-on-pickup items. Random-suffix gear ("of the Bear") is
+    priced by the median of the suffix variants aux has seen.
+  * aux's disenchant estimate (off by default, `/okv de`), minus the cut.
+  * the vendor sell price. Without aux this is all you get and the line
+    says so. Quest items are a known 0.
 * **Skinning** value is shown as a separate line when the character has the
-  skill (it is not part of the kill total).
+  skill (it is not part of the kill total). Data marks herb and ore
+  "skinning" tables too, but Turtle's database has none.
+* **Friendly NPCs** show nothing unless `/okv friendly` is on. Corpses do.
 
 ## Install
 
@@ -35,6 +41,10 @@ recommended: aux-addon (prices), pfQuest (item names for uncached items).
 | `/okv toggle` | tooltip line on/off |
 | `/okv detail <n>` | number of top-contributor lines under the total (default 3) |
 | `/okv price value\|today` | aux source: weighted median (default) or today's min buyout |
+| `/okv guid` | print the target's raw guid, parsed creature id and whether data exists (use this first if no line ever appears) |
+| `/okv cut <pct>` | auction house cut taken off AH and disenchant values (default 5) |
+| `/okv de` | consider aux's disenchant estimate (default off) |
+| `/okv friendly` | show the line on friendly NPCs too (default off) |
 | `/okv skin` | skinning line on/off |
 | `/okv vendor` | vendor price fallback/floor on/off |
 | `/okv rare <pct>` | drops below this chance are listed as "rare drops", outside the total (default 0.1) |
@@ -53,10 +63,11 @@ total.
 
 * Data is Turtle 1.18.1. OctoWoW-only creatures and any loot rebalances
   are not in it; those mobs show no line.
-* Random-suffix drops ("of the Bear") are priced as the base item, which
-  aux usually has no value for, so they fall back to vendor price.
-* The auction house cut is not subtracted.
-* Quest-conditional drops are skipped (they cannot be sold).
+* Quest-conditional drops (negative chance in the loot table) are skipped.
+* Class/race-conditioned loot rows count at full chance.
+* Group loot rows are treated as "pick one per group"; multi-roll bosses
+  are modelled exactly as the loot templates specify.
+* Results are cached for 30 seconds per creature; config commands flush it.
 
 ## Regenerating the data
 
@@ -72,7 +83,7 @@ rewrites `Data.lua`. Delete the cache to pull fresh copies.
     npm test
 
 Syntax-checks the Lua, validates `Data.lua` sentinels, then runs the real
-addon under fengari with a stubbed WoW + aux environment (21 behavior
+addon under fengari with a stubbed WoW + aux environment (47 behavior
 checks). Runs on every push via GitHub Actions.
 
 ## License

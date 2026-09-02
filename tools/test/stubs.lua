@@ -6,6 +6,10 @@ string.gfind = string.gfind or string.gmatch
 math.mod = math.mod or math.fmod
 table.getn = table.getn or function(t) return #t end
 format = string.format
+function getglobal(name) return _G[name] end
+local now = 1000
+function GetTime() return now end
+function AdvanceTime(s) now = now + s end
 
 -- chat
 ChatLog = {}
@@ -29,11 +33,26 @@ function FireEvent(e)
   event = nil
 end
 
--- tooltip
+-- tooltip: lines are mirrored into GameTooltipTextLeftN globals like the client does
 GameTooltip = { lines = {}, visible = false, scripts = {}, shown = 0 }
-function GameTooltip.SetUnit(self, unit) self.lines = {}; self.visible = true; self.unit = unit end
-function GameTooltip.AddDoubleLine(self, l, r) table.insert(self.lines, l .. " | " .. r) end
-function GameTooltip.AddLine(self, l) table.insert(self.lines, l) end
+local function syncLines(self)
+  for i = 1, 40 do _G["GameTooltipTextLeft" .. i] = nil end
+  for i, l in ipairs(self.lines) do
+    local left = string.match(l, "^(.-) | ") or l
+    _G["GameTooltipTextLeft" .. i] = { GetText = function() return left end }
+  end
+end
+function GameTooltip.GetName(self) return "GameTooltip" end
+function GameTooltip.NumLines(self) return #self.lines end
+function GameTooltip.SetUnit(self, unit)
+  -- the client rebuilds the tooltip from scratch: name line only
+  self.lines = { (Units[unit] and Units[unit].name) or "?" }
+  self.visible = true
+  self.unit = unit
+  syncLines(self)
+end
+function GameTooltip.AddDoubleLine(self, l, r) table.insert(self.lines, l .. " | " .. r); syncLines(self) end
+function GameTooltip.AddLine(self, l) table.insert(self.lines, l); syncLines(self) end
 function GameTooltip.Show(self) self.shown = self.shown + 1 end
 function GameTooltip.IsVisible(self) return self.visible end
 function GameTooltip.GetScript(self, which) return self.scripts[which] end
@@ -42,8 +61,14 @@ function GameTooltip.Hide(self)
   self.visible = false
   if self.scripts.OnHide then self.scripts.OnHide() end
 end
+-- what the client does for a world mouseover: rebuild with the unit's name
+function GameTooltip.ClientShowUnit(self, unit)
+  self.lines = { (Units[unit] and Units[unit].name) or "?" }
+  self.visible = true
+  syncLines(self)
+end
 
--- units: Units[unit] = { guid=, player=, name= }
+-- units: Units[unit] = { guid=, player=, name=, friendly=, dead= }
 Units = {}
 function UnitExists(unit)
   local u = Units[unit]
@@ -52,24 +77,39 @@ function UnitExists(unit)
 end
 function UnitIsPlayer(unit) return Units[unit] and Units[unit].player end
 function UnitName(unit) return Units[unit] and Units[unit].name end
+function UnitCanAttack(a, unit) return Units[unit] and not Units[unit].friendly end
+function UnitIsDead(unit) return Units[unit] and Units[unit].dead end
 
 -- items / skills
-ItemNames = {}
-function GetItemInfo(id) return ItemNames[id] end
+ItemInfo = {}   -- id -> { name, quality, level, equip }
+function GetItemInfo(id)
+  local i = ItemInfo[id]
+  if not i then return nil end
+  return i.name, "item:" .. id, i.quality, i.level, "Armor", "Cloth", 1, i.equip
+end
 Skills = {}
 function GetNumSkillLines() return #Skills end
 function GetSkillLineInfo(i) return Skills[i] end
 
--- aux-addon module system: require('aux.core.history').value(key)
-AuxPrices = {}       -- key "id:0" -> value copper
+-- aux-addon module system: require('aux.core.history').value(key) etc.
+AuxPrices = {}       -- key "id:suffix" -> value copper
 AuxToday = {}        -- key -> today's min buyout (counts as one observation)
 AuxDays = {}         -- key -> list of pushed daily data points
+AuxHistoryKeys = {}  -- faction_data.history table (keys matter, values don't)
+AuxDE = {}           -- item id -> disenchant expectation
 AuxLoaded = true
 function require(name)
-  if name ~= "aux.core.history" or not AuxLoaded then return {} end
-  return {
-    value = function(key) return AuxPrices[key] end,
-    market_value = function(key) return AuxToday[key] end,
-    data_points = function(key) return AuxDays[key] or {} end,
-  }
+  if not AuxLoaded then return {} end
+  if name == "aux.core.history" then
+    return {
+      value = function(key) return AuxPrices[key] end,
+      market_value = function(key) return AuxToday[key] end,
+      data_points = function(key) return AuxDays[key] or {} end,
+    }
+  elseif name == "aux" then
+    return { faction_data = { history = AuxHistoryKeys } }
+  elseif name == "aux.core.disenchant" then
+    return { value = function(slot, quality, level, id) return AuxDE[id] end }
+  end
+  return {}
 end
