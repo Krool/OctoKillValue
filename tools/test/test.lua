@@ -370,6 +370,57 @@ ChatLog = {}
 okv("zone")
 check("unknown zone is reported", chatHas("unknown zone") ~= nil)
 
+-- ---- Lua-pool safety (client crashed in lmemPool.cpp on /okv zone, 2026-09-02)
+-- (1) items shared by several creatures are priced once per 30s, not once per creature
+do
+  local origRequire = require
+  DPCalls = {}
+  require = function(name)
+    local m = origRequire(name)
+    if name == "aux.core.history" and type(m.data_points) == "function" then
+      local dp = m.data_points
+      m.data_points = function(key) DPCalls[key] = (DPCalls[key] or 0) + 1; return dp(key) end
+    end
+    return m
+  end
+  OctoKillValue_ResetAux()
+  -- a second creature that drops the Kobold Vermin apple (4536)
+  local other
+  for id, s in pairs(OKV_MOB) do
+    local _, _, drops = string.find(s, "^%d*|([^|]*)|")
+    if id ~= 6 and drops and string.find(drops, "^4536:") or (drops and string.find(drops, ",4536:")) then other = id; break end
+  end
+  check("a second creature dropping item 4536 exists in data", other ~= nil)
+  okv("id 6")
+  local c1 = DPCalls["4536:0"] or 0
+  okv("id " .. tostring(other))
+  local c2 = DPCalls["4536:0"] or 0
+  check("shared item priced once across creatures (" .. c1 .. " -> " .. c2 .. ")", c1 >= 1 and c2 == c1)
+  require = origRequire
+  OctoKillValue_ResetAux()
+end
+-- (2) a zone report forces garbage collection every 20 creatures
+do
+  local gcCalls = 0
+  local origGC = collectgarbage
+  collectgarbage = function(...) gcCalls = gcCalls + 1 end
+  local savedData = pfDB.units.data
+  local big = {}
+  local n = 0
+  for id in pairs(OKV_MOB) do
+    big[id] = { coords = { { 50, 50, 1, 300 } } }
+    n = n + 1
+    if n >= 45 then break end
+  end
+  pfDB.units.data = big
+  ZoneName = "Dun Morogh"
+  ChatLog = {}
+  okv("zone 3")
+  pfDB.units.data = savedData
+  collectgarbage = origGC
+  check("zone report collects garbage periodically (" .. gcCalls .. " calls over 45 creatures)", gcCalls == 2)
+end
+
 -- ---- requirements: login summary, status, missing-guid client
 ChatLog = {}
 FireEvent("PLAYER_ENTERING_WORLD")

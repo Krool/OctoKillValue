@@ -82,11 +82,16 @@ end
 -- Re-detect aux (e.g. after it loads late); also used by the test harness.
 local suffixIndex = nil
 local computeCache = {}
+local priceCache = {}   -- itemId -> { t, price, src } (30s, see CACHE_TTL)
+local function ClearCaches()
+  computeCache = {}
+  priceCache = {}
+end
 function OctoKillValue_ResetAux()
   auxModules = {}
   auxChecked = {}
   suffixIndex = nil
-  computeCache = {}
+  ClearCaches()
 end
 
 -- aux's raw observations for a key: the pushed daily minimum buyouts plus
@@ -205,7 +210,24 @@ end
 local ParsePairs -- forward declaration (defined in the data section)
 local contentsCache = {}
 
+local CACHE_TTL = 30
+
+local PriceUncached
+-- Cached per item (top level only - container contents are priced with a
+-- depth cutoff). A zone report prices the shared world-drop pools once
+-- instead of once per creature, which is what exhausted the client's Lua
+-- pool (lmemPool.cpp crash on /okv zone in Redridge, 2026-09-02).
 local function Price(itemId, depth)
+  if depth and depth > 0 then return PriceUncached(itemId, depth) end
+  local now = GetTime and GetTime() or 0
+  local hit = priceCache[itemId]
+  if hit and now - hit.t < CACHE_TTL then return hit.price, hit.src end
+  local price, src = PriceUncached(itemId, 0)
+  priceCache[itemId] = { t = now, price = price, src = src }
+  return price, src
+end
+
+PriceUncached = function(itemId, depth)
   depth = depth or 0
   local bind = OKV_BIND and OKV_BIND[itemId]
   if bind == 4 then return 0, "quest" end
@@ -298,8 +320,6 @@ local function AddQty(acc, id, qty)
     table.insert(acc.all, c)
   end
 end
-
-local CACHE_TTL = 30
 
 local function Compute(entry)
   local hit = computeCache[entry]
@@ -568,6 +588,7 @@ local function ZoneReport(n, includeElite)
   end
   if not zid then Print("unknown zone: " .. tostring(zoneName)); return end
   local list = {}
+  local computed = 0
   for id, u in pairs(pfDB["units"]["data"]) do
     if type(u) == "table" and type(u["coords"]) == "table" and OKV_MOB[id] then
       local here = false
@@ -575,6 +596,10 @@ local function ZoneReport(n, includeElite)
         if c[3] == zid then here = true; break end
       end
       if here then
+        -- the 1.12 client crashes (lmemPool.cpp) when a burst of garbage
+        -- outruns its collector; a whole zone is such a burst
+        computed = computed + 1
+        if math.mod(computed, 20) == 0 and collectgarbage then collectgarbage() end
         local acc = Compute(id)
         if acc and acc.total >= 1 and (includeElite or not acc.rank or acc.rank == 0) then
           table.insert(list, { id = id, acc = acc })
@@ -597,7 +622,7 @@ end
 
 local function Toggle(key, label)
   cfg[key] = not cfg[key]
-  computeCache = {}
+  ClearCaches()
   Print(label .. " " .. (cfg[key] and "on" or "off"))
 end
 
@@ -615,19 +640,19 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
     if n then cfg.detail = math.floor(n) end
     Print("detail lines: " .. cfg.detail)
   elseif cmd == "price" then
-    if arg == "today" or arg == "value" then cfg.price = arg; computeCache = {} end
+    if arg == "today" or arg == "value" then cfg.price = arg; ClearCaches() end
     Print("aux price source: " .. cfg.price)
   elseif cmd == "cut" then
     local pct = tonumber(arg)
-    if pct then cfg.cut = pct; computeCache = {} end
+    if pct then cfg.cut = pct; ClearCaches() end
     Print("auction house cut: " .. cfg.cut .. "%")
   elseif cmd == "rare" then
     local pct = tonumber(arg)
-    if pct then cfg.rare = pct / 100; computeCache = {} end
+    if pct then cfg.rare = pct / 100; ClearCaches() end
     Print("drops below " .. (cfg.rare * 100) .. "% are listed as rare, outside the total")
   elseif cmd == "mindays" then
     local n = tonumber(arg)
-    if n then cfg.mindays = math.floor(n); computeCache = {} end
+    if n then cfg.mindays = math.floor(n); ClearCaches() end
     Print("aux prices above " .. Money(cfg.trust) .. " need " .. cfg.mindays .. " daily observation(s)")
   elseif cmd == "zone" then
     local _, _, num, rest = string.find(arg, "^(%d*)%s*(.*)$")
@@ -649,7 +674,7 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
     end
   elseif cmd == "reset" then
     for k, v in pairs(DEFAULTS) do cfg[k] = v end
-    computeCache = {}
+    ClearCaches()
     Print("settings restored to defaults")
   elseif cmd == "target" or cmd == "" or cmd == "help" then
     local entry = (cmd ~= "help") and UnitEntry("target") or nil
