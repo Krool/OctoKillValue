@@ -33,7 +33,16 @@ local DEFAULTS = {
   mindays = 3,      -- aux prices above `trust` copper need this many daily observations
                     -- (a single 24h listing can straddle a midnight push = 2 observations)
   trust = 500000,   -- 50g: prices at or below this are trusted from a single sighting
+  hello = true,     -- one-line "loaded" message at login
 }
+local SETTING_HELP = {
+  enabled = "tooltip line", detail = "contributor lines under the total", price = "aux source: value|today",
+  skin = "gather line (skinning/mining/herbalism)", vendor = "vendor price as fallback/floor",
+  de = "disenchant estimate (aux)", friendly = "show on friendly NPCs", cut = "auction house cut %",
+  rare = "rare threshold (fraction of a drop per kill)", mindays = "days an expensive price must be seen",
+  trust = "copper below which one sighting is trusted", hello = "login message",
+}
+local SETTING_ORDER = { "enabled", "detail", "price", "cut", "rare", "mindays", "trust", "vendor", "de", "skin", "friendly", "hello" }
 local cfg
 
 local function InitConfig()
@@ -455,12 +464,53 @@ end
 
 -- World mouseover: the client fills GameTooltip itself, then fires this.
 local frame = CreateFrame("Frame", ADDON .. "Frame")
+-- ---------------------------------------------------------------- requirements
+-- Hard: a guid-returning UnitExists (Turtle WoW / OctoWoW client API;
+-- stock 1.12 returns only a boolean and the addon can never identify a
+-- creature). Optional: aux-addon (auction prices; vendor-only without),
+-- pfQuest (item names for uncached items, spawn zones for /okv zone).
+local function Requirements()
+  local _, guid = UnitExists("player")
+  local r = {
+    guid = type(guid) == "string" and string.len(guid) >= 16,
+    aux = AuxHistory() ~= nil,
+    pfquest = (pfDB and pfDB["units"] and pfDB["units"]["data"]) and true or false,
+    data = (OKV_MOB and OKV_MOB[6]) and true or false,
+  }
+  return r
+end
+
+local function Status(verbose)
+  local r = Requirements()
+  local function mark(ok) return ok and "|cff33ff33yes|r" or "|cffff3333no|r" end
+  Print("creature ids " .. mark(r.guid) .. ", aux prices " .. mark(r.aux) .. ", pfQuest "
+    .. mark(r.pfquest) .. ", loot data " .. mark(r.data))
+  if not r.guid then
+    Print("|cffff3333This client does not report creature ids (UnitExists returns no guid).|r "
+      .. "OctoKillValue needs the Turtle WoW / OctoWoW client API; no tooltip line can be shown.")
+  elseif verbose then
+    if not r.aux then Print("aux-addon not found: kill values use vendor sell prices only. Install aux and scan the auction house for real prices.") end
+    if not r.pfquest then Print("pfQuest not found: /okv zone is unavailable and uncached items show as item:<id>.") end
+  end
+end
+
+local announced = false
 frame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
 frame:RegisterEvent("VARIABLES_LOADED")
+frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("SKILL_LINES_CHANGED")
 frame:SetScript("OnEvent", function()
   if event == "VARIABLES_LOADED" then
     InitConfig()
+  elseif event == "PLAYER_ENTERING_WORLD" then
+    if cfg and not announced then
+      announced = true
+      local r = Requirements()
+      if not r.guid or not r.aux or not r.data then Status(true) end
+      if cfg.hello ~= false and r.guid then
+        Print("loaded. Hover a creature for its kill value; /okv for commands.")
+      end
+    end
   elseif event == "SKILL_LINES_CHANGED" then
     skillCache = {}
   elseif event == "UPDATE_MOUSEOVER_UNIT" then
@@ -586,22 +636,42 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
     local exists, guid = UnitExists("target")
     Print("target guid: " .. tostring(guid) .. " -> creature " .. tostring(GuidEntry(guid))
       .. (GuidEntry(guid) and OKV_MOB[GuidEntry(guid)] and " (has data)" or " (no data)"))
-  elseif cmd == "target" or cmd == "" then
-    local entry = UnitEntry("target")
+  elseif cmd == "status" then
+    Status(true)
+  elseif cmd == "hello" then Toggle("hello", "login message")
+  elseif cmd == "config" then
+    for _, k in ipairs(SETTING_ORDER) do
+      local v = cfg[k]
+      if type(v) == "boolean" then v = v and "on" or "off" end
+      if k == "rare" then v = (cfg.rare * 100) .. "%" end
+      if k == "trust" then v = Money(cfg.trust) end
+      Print(format("  %-8s %-10s %s", k, tostring(v), SETTING_HELP[k] or ""))
+    end
+  elseif cmd == "reset" then
+    for k, v in pairs(DEFAULTS) do cfg[k] = v end
+    computeCache = {}
+    Print("settings restored to defaults")
+  elseif cmd == "target" or cmd == "" or cmd == "help" then
+    local entry = (cmd ~= "help") and UnitEntry("target") or nil
     if entry then
       Report(entry, UnitName("target") or "target")
     elseif cmd == "target" then
       Print("no creature targeted")
     else
-      Print("/okv target | id <creatureId> | zone [n] [all] | guid | toggle | detail <n> | price value|today | cut <pct> | rare <pct> | mindays <n> | skin | vendor | de | friendly")
-      Print("aux: " .. (AuxHistory() and "connected" or "not found") .. ", tooltip "
-        .. (cfg.enabled and "on" or "off") .. ", detail " .. cfg.detail .. ", price " .. cfg.price
-        .. ", cut " .. cfg.cut .. "%, de " .. (cfg.de and "on" or "off"))
+      Print("commands:")
+      Print("  /okv                     breakdown for your target")
+      Print("  /okv id <creatureId>     breakdown for any creature")
+      Print("  /okv zone [n] [all]      best farm targets in this zone (needs pfQuest)")
+      Print("  /okv config | reset      show all settings / restore defaults")
+      Print("  /okv status | guid       requirement check / target guid diagnostic")
+      Print("  /okv toggle | detail <n> | price value|today | cut <pct> | rare <pct> | mindays <n>")
+      Print("  /okv vendor | de | skin | friendly | hello    (on/off switches)")
+      Status(false)
     end
   elseif cmd == "id" then
     local entry = tonumber(arg)
     if entry then Report(entry, "creature") else Print("usage: /okv id <creatureId>") end
   else
-    Print("unknown command; /okv for help")
+    Print("unknown command '" .. cmd .. "'; /okv help")
   end
 end

@@ -370,6 +370,50 @@ ChatLog = {}
 okv("zone")
 check("unknown zone is reported", chatHas("unknown zone") ~= nil)
 
+-- ---- requirements: login summary, status, missing-guid client
+ChatLog = {}
+FireEvent("PLAYER_ENTERING_WORLD")
+check("login prints a one-line hello when requirements are met", chatHas("loaded%. Hover a creature") ~= nil)
+check("login does not spam the status when everything is present", chatHas("creature ids") == nil)
+ChatLog = {}
+FireEvent("PLAYER_ENTERING_WORLD")
+check("login message only once per session", #ChatLog == 0)
+ChatLog = {}
+okv("status")
+check("/okv status lists the four requirements", chatHas("creature ids .*aux prices .*pfQuest .*loot data") ~= nil)
+-- a stock 1.12 client: UnitExists returns no guid
+local savedPlayer = Units.player
+Units.player = { name = "Tester", player = true }
+ChatLog = {}
+okv("status")
+check("missing guid support is called out plainly", chatHas("does not report creature ids") ~= nil)
+Units.player = savedPlayer
+-- aux missing: status explains vendor-only
+AuxLoaded = false
+OctoKillValue_ResetAux()
+ChatLog = {}
+okv("status")
+check("missing aux explains vendor-only pricing", chatHas("aux%-addon not found") ~= nil)
+AuxLoaded = true
+OctoKillValue_ResetAux()
+
+-- ---- settings: config listing, reset, help
+OctoKillValueDB.detail = 7
+ChatLog = {}
+okv("config")
+check("/okv config lists detail with its value", chatHas("detail   7") ~= nil)
+check("/okv config shows rare as a percent", chatHas("rare     0%.1%%") ~= nil)
+okv("reset")
+check("/okv reset restores defaults", OctoKillValueDB.detail == 3 and OctoKillValueDB.cut == 5)
+ChatLog = {}
+okv("help")
+check("/okv help lists the zone command", chatHas("/okv zone") ~= nil)
+ChatLog = {}
+okv("bogus")
+check("unknown command points at help", chatHas("unknown command 'bogus'") ~= nil)
+OctoKillValueDB.cut = 0
+OctoKillValueDB.vendor = false
+
 -- /okv guid diagnostic
 Units.target = { guid = ONYXIA, name = "Onyxia" }
 ChatLog = {}

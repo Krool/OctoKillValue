@@ -1,8 +1,8 @@
 ## Interface: 11200
 ## Title: OctoKillValue
-## Notes: Expected gold per kill on mob tooltips: coins + drop table x aux-addon auction values.
+## Notes: Expected gold per kill on creature tooltips: coins + drop table x aux-addon auction values. Needs the Turtle/OctoWoW client API.
 ## Author: Krool
-## Version: 1
+## Version: 1.0
 ## OptionalDeps: aux-addon, pfQuest, pfQuest-octo
 ## SavedVariables: OctoKillValueDB
 

@@ -1,88 +1,122 @@
 # OctoKillValue
 
-Expected gold per kill on creature tooltips, for WoW 1.12 (Turtle / OctoWoW).
+Expected gold per kill on creature tooltips, for Turtle WoW and OctoWoW
+(WoW 1.12 clients with the Turtle API).
 
-    Kill value            12s 40c
-      coins                   3s
-      Wool Cloth 37%       6s 20c
+    Kill value              12s 40c
+      coins                     3s
+      Wool Cloth 37%         6s 20c
       Small Lustrous Pearl 2%  2s 10c
-      skinning            +1s 80c
+      rare drops (<0.1%)    +1s 80c
+      skinning              +1s 80c
 
 `value = average coin drop + sum(drop chance x average stack x item price)`
 
-* **Drop tables** are baked into `Data.lua` from the Turtle WoW 1.18.1
-  preservation database (github.com/Penqle/tortoise-wow): coin ranges,
-  every loot row with its min/max stack, group and reference-loot
-  semantics resolved the way the server rolls them.
-* **Prices** are read live from aux at hover time, so they follow your
-  auction scans with nothing to maintain. Each item takes the best of:
-  * [aux-addon](https://github.com/shirsig/aux-addon)'s auction history,
-    minus the AH cut: the lower median of aux's raw daily observations
-    (aux's own "Value" is a weighted median that picks the HIGHER of two
-    points, so one troll listing beside one real price wins there). Never
-    used for bind-on-pickup or poor-quality (grey) items. Random-suffix
-    gear ("of the Bear") is priced by the median of the suffix variants
-    aux has seen.
-  * aux's disenchant estimate (off by default, `/okv de`), minus the cut.
-  * the vendor sell price. Without aux this is all you get and the line
-    says so. Quest items are a known 0.
-  * for containers (clams, lockboxes, gem bags): the expected value of
-    the contents when opened, if that beats the container's own price.
-    Nested containers resolve three levels deep.
-* **Skinning** value is shown as a separate line when the character has the
-  skill (it is not part of the kill total). Data marks herb and ore
-  "skinning" tables too, but Turtle's database has none.
-* **Friendly NPCs** show nothing unless `/okv friendly` is on. Corpses do.
+Hover any creature. `/okv` with a target prints the full breakdown,
+`/okv zone` ranks the best farm targets where you stand.
+
+## Requirements
+
+| | Needed for | Without it |
+|---|---|---|
+| **Turtle WoW / OctoWoW client** | identifying creatures (`UnitExists` returns a guid) | **nothing works** on a stock 1.12 client; the addon says so at login and in `/okv status` |
+| [aux-addon](https://github.com/shirsig/aux-addon) (optional) | auction prices, disenchant estimate | vendor sell prices only; the tooltip line is tagged "(vendor only)" |
+| [pfQuest](https://github.com/shagu/pfQuest) (optional, any variant) | `/okv zone`, names of items not yet in your client cache | no zone ranking; uncached items print as `item:<id>` |
+
+Prices are read live from aux each time you hover, so scan the auction
+house now and then and the numbers follow. There is nothing to maintain.
 
 ## Install
 
-Copy the `OctoKillValue` folder into `Interface\AddOns`. Optional but
-recommended: aux-addon (prices), pfQuest (item names for uncached items).
+**OctoLauncher / GitAddonsManager:** add the repository URL
+`https://github.com/Krool/OctoKillValue` as an addon. The clone lands as
+`Interface\AddOns\OctoKillValue` and loads as-is.
+
+**Manual:** download the release zip and put the `OctoKillValue` folder
+into `Interface\AddOns`, so that `Interface\AddOns\OctoKillValue\OctoKillValue.toc`
+exists.
+
+At login the addon prints one line confirming it loaded, and a warning if
+a requirement is missing (`/okv hello` turns the confirmation off).
 
 ## Commands
 
 | command | effect |
 |---|---|
-| `/okv` or `/okv target` | print the breakdown for the current target |
+| `/okv` | breakdown for your target: coins, top drops with source tags, rare tail, gather value |
 | `/okv id <creatureId>` | breakdown for any creature entry |
-| `/okv zone [n] [all]` | top n creatures in the current zone by kill value (needs pfQuest for spawn zones); non-elite unless `all`; shows level, rank and value per 1000 health |
-| `/okv toggle` | tooltip line on/off |
-| `/okv detail <n>` | number of top-contributor lines under the total (default 3) |
-| `/okv price value\|today` | aux source: weighted median (default) or today's min buyout |
-| `/okv guid` | print the target's raw guid, parsed creature id and whether data exists (use this first if no line ever appears) |
-| `/okv cut <pct>` | auction house cut taken off AH and disenchant values (default 5) |
-| `/okv de` | consider aux's disenchant estimate (default off) |
-| `/okv friendly` | show the line on friendly NPCs too (default off) |
-| `/okv skin` | skinning line on/off |
-| `/okv vendor` | vendor price fallback/floor on/off |
-| `/okv rare <pct>` | drops below this chance are listed as "rare drops", outside the total (default 0.1) |
-| `/okv mindays <n>` | aux prices above 50g must have been seen on n days (default 3) |
+| `/okv zone [n] [all]` | top n creatures in the current zone by kill value (needs pfQuest); non-elite unless `all`; shows level, rank and value per 1000 health |
+| `/okv status` | requirement check with plain-language advice |
+| `/okv guid` | raw guid of the target, parsed creature id, whether loot data exists |
+| `/okv config` | every setting with its value and meaning |
+| `/okv reset` | restore default settings |
+| `/okv help` | command list |
 
-## Why the two guards
+Settings (saved per account):
 
-Auction history contains lone absurd listings (one 166,000g buyout seen
-once). Multiplied through a 0.02% world-drop pool that every mob shares,
-one such record adds gold to every creature in the game. So prices above
-50g need at least three daily observations (one listing can straddle a midnight push and count twice), and the sub-0.1% tail is shown
-on its own line where a bad price is visible instead of hidden in the
-total.
+| command | default | meaning |
+|---|---|---|
+| `/okv toggle` | on | tooltip line on/off |
+| `/okv detail <n>` | 3 | contributor lines under the total (0 = none) |
+| `/okv price value\|today` | value | aux source: lower median of daily observations, or today's minimum buyout |
+| `/okv cut <pct>` | 5 | auction house cut taken off AH and disenchant values |
+| `/okv rare <pct>` | 0.1 | drops below this chance are shown as "rare drops", outside the total |
+| `/okv mindays <n>` | 3 | days an aux price above 50g must have been seen before it counts |
+| `/okv vendor` | on | vendor sell price as fallback and floor |
+| `/okv de` | off | also consider aux's disenchant estimate for gear |
+| `/okv skin` | on | gather line when you have the skill (not part of the total) |
+| `/okv friendly` | off | show the line on friendly NPCs (corpses always show) |
+| `/okv hello` | on | login confirmation line |
 
-## Caveats
+## How prices are chosen
 
-* Data is Turtle 1.18.1. OctoWoW-only creatures and any loot rebalances
-  are not in it; those mobs show no line.
-* Quest-conditional drops (negative chance in the loot table) are skipped.
-* Class/race-conditioned loot rows count at full chance.
-* Group loot rows are treated as "pick one per group"; multi-roll bosses
-  are modelled exactly as the loot templates specify.
-* Results are cached for 30 seconds per creature; config commands flush it.
+Each item takes the best of:
 
-## Regenerating the data
+* **Auction:** the lower median of aux's raw daily minimum buyouts, minus
+  the cut. Never for bind-on-pickup or poor-quality (grey) items. Random
+  suffix gear ("of the Bear") uses the median of the suffix variants aux
+  has seen. Prices above 50g must have been observed on 3 days.
+* **Disenchant** (optional): aux's expectation for the item's quality,
+  level and slot, minus the cut.
+* **Vendor:** the sell price from the database.
+* **Contents:** clams, lockboxes and gem bags are worth their expected
+  contents when opened, if that beats the container's own price.
+
+Quest items are a known 0. Bind-on-pickup items only ever use vendor or
+disenchant value.
+
+### Why the guards
+
+Auction history contains troll listings: a grey figurine at 999g, a
+one-off 166,000g buyout. aux's own "value" is a weighted median that
+returns the higher of two observations, so one such listing next to one
+real price wins, and multiplied through the world-drop pool every creature
+shares it inflated every mob in the game. Hence the lower median, the
+3-day rule for expensive items, the grey exclusion, and the separate
+"rare drops" line where a bad price stays visible instead of hiding in
+the total.
+
+## Data
+
+`Data.lua` is generated from the Turtle WoW 1.18.1 preservation database
+(github.com/Penqle/tortoise-wow): coin ranges, every creature, reference,
+skinning and container loot row with min/max stacks, group and reference
+semantics resolved the way the server rolls them, plus vendor prices,
+bonding, quality and disenchant info for every droppable item.
 
     node tools\gen-data.js
 
-Downloads the five SQL tables into `tools\sqlcache` on first run and
-rewrites `Data.lua`. Delete the cache to pull fresh copies.
+downloads the SQL into `tools\sqlcache` on first run and rewrites
+`Data.lua`.
+
+### Caveats
+
+* Data is Turtle 1.18.1. OctoWoW-only creatures and any loot rebalances
+  are not in it; those creatures show no line.
+* Quest-conditional loot rows (negative chance) are skipped. Class or race
+  conditioned rows count at full chance.
+* Pickpocket loot is not included.
+* Results are cached for 30 seconds per creature; settings changes flush it.
 
 ## Tests
 
@@ -91,8 +125,8 @@ rewrites `Data.lua`. Delete the cache to pull fresh copies.
     npm test
 
 Syntax-checks the Lua, validates `Data.lua` sentinels, then runs the real
-addon under fengari with a stubbed WoW + aux environment (47 behavior
-checks). Runs on every push via GitHub Actions.
+addon under fengari with a stubbed WoW + aux environment (75 behavior
+checks). GitHub Actions runs them on every push.
 
 ## License
 

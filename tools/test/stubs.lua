@@ -69,7 +69,7 @@ function GameTooltip.ClientShowUnit(self, unit)
 end
 
 -- units: Units[unit] = { guid=, player=, name=, friendly=, dead= }
-Units = {}
+Units = { player = { guid = "0x000000003B9E9C90", name = "Tester", player = true } }
 function UnitExists(unit)
   local u = Units[unit]
   if not u then return nil end
