@@ -98,7 +98,19 @@ function GetSkillLineInfo(i) return Skills[i] end
 AuxPrices = {}       -- key "id:suffix" -> value copper
 AuxToday = {}        -- key -> today's min buyout (counts as one observation)
 AuxDays = {}         -- key -> list of pushed daily data points
-AuxHistoryKeys = {}  -- faction_data.history table (keys matter, values don't)
+AuxHistoryKeys = {}  -- faction_data.history table: real aux packs each record
+                     -- into a string ("next#today#v@t;v@t"); a string value here
+                     -- is parsed directly by the addon, anything else makes it
+                     -- fall back to the API stubs above. Keys that only exist
+                     -- in AuxPrices/AuxToday/AuxDays read as `true` (API path);
+                     -- unknown keys read as nil, like aux's history for an item
+                     -- never seen.
+HistoryMT = { __index = function(_, key)
+  if AuxPrices[key] ~= nil or AuxToday[key] ~= nil or AuxDays[key] ~= nil then return true end
+  return nil
+end }
+function NewHistoryKeys(t) return setmetatable(t or {}, HistoryMT) end
+AuxHistoryKeys = NewHistoryKeys()
 AuxDE = {}           -- item id -> disenchant expectation
 AuxLoaded = true
 function require(name)

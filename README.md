@@ -116,7 +116,10 @@ downloads the SQL into `tools\sqlcache` on first run and rewrites
 * Quest-conditional loot rows (negative chance) are skipped. Class or race
   conditioned rows count at full chance.
 * Pickpocket loot is not included.
-* Results are cached for 30 seconds per creature; settings changes flush it.
+* Results are cached per creature (up to 64 creatures, 10 minutes) and
+  flushed when you close the auction house after a scan or search, or
+  change a setting. aux's history records are read straight from their
+  packed strings, so a hover never decodes them through aux's API.
 
 ## Tests
 

@@ -137,12 +137,12 @@ check("quest items exist in bind data", questItem ~= nil)
 
 -- ---- random-suffix aggregation: base id has no history, suffix keys do
 AuxPrices = { ["4536:0"] = nil, ["4536:12"] = 300, ["4536:13"] = 100, ["4536:14"] = 200 }
-AuxHistoryKeys = { ["4536:12"] = "x", ["4536:13"] = "x", ["4536:14"] = "x", ["1:0"] = "x" }
+AuxHistoryKeys = NewHistoryKeys({ ["4536:12"] = "x", ["4536:13"] = "x", ["4536:14"] = "x", ["1:0"] = "x" })
 OctoKillValue_ResetAux()
 ChatLog = {}
 okv("id 6")
 check("suffix variants priced by their median (200)", math.abs(total() - (gold6 + appleQty * 200)) <= 1)
-AuxHistoryKeys = {}
+AuxHistoryKeys = NewHistoryKeys()
 
 -- ---- disenchant value (optional) beats vendor when higher
 AuxPrices = {}
@@ -242,10 +242,13 @@ hover("mouseover", KOBOLD, "Kobold Vermin")
 local before = findLine("^Kill value")
 AuxPrices["4536:0"] = 10000
 hover("mouseover", KOBOLD, "Kobold Vermin")
-check("result cached within 30s", findLine("^Kill value") == before)
+check("result cached on re-hover", findLine("^Kill value") == before)
 AdvanceTime(31)
 hover("mouseover", KOBOLD, "Kobold Vermin")
-check("cache expires after 30s", findLine("^Kill value") ~= before)
+check("cache no longer expires after 30s (that re-priced every drop twice a minute)", findLine("^Kill value") == before)
+AdvanceTime(600)
+hover("mouseover", KOBOLD, "Kobold Vermin")
+check("cache expires after 10 minutes", findLine("^Kill value") ~= before)
 
 -- toggle off hides the line
 okv("toggle")
@@ -481,6 +484,102 @@ Units.target = { guid = ONYXIA, name = "Onyxia" }
 ChatLog = {}
 okv("guid")
 check("/okv guid reports entry and data presence", chatHas("creature 10184 %(has data%)") ~= nil)
+
+-- ---- hover-path performance (frozen frames on hover, 2026-09-02)
+-- (1) aux history records are read from their packed string; the API
+--     (data_points/market_value) decodes that string through temp tables
+--     on every call and was the cost of pricing a world-drop pool
+do
+  local origRequire = require
+  local apiCalls = 0
+  require = function(name)
+    local m = origRequire(name)
+    if name == "aux.core.history" and type(m.data_points) == "function" then
+      local dp, mv = m.data_points, m.market_value
+      m.data_points = function(key) apiCalls = apiCalls + 1; return dp(key) end
+      m.market_value = function(key) apiCalls = apiCalls + 1; return mv(key) end
+    end
+    return m
+  end
+  AuxPrices, AuxToday, AuxDays = {}, {}, {}
+  OctoKillValueDB.vendor = false
+  -- points 100/200/300 pushed, today's min buyout 50
+  AuxHistoryKeys = NewHistoryKeys({ ["4536:0"] = "1788418800#50#300@1788332400;100@1787727600;200@1787036400" })
+  OctoKillValue_ResetAux()
+  ChatLog = {}
+  okv("id 6")
+  check("packed record: lower median of {50 today, 100, 200, 300} = 100", math.abs(total() - (gold6 + appleQty * 100)) <= 1)
+  check("no aux history API call was made (" .. apiCalls .. ")", apiCalls == 0)
+  okv("price today")
+  ChatLog = {}
+  okv("id 6")
+  check("price today reads today's min buyout (50) from the packed record", math.abs(total() - (gold6 + appleQty * 50)) <= 1)
+  okv("price value")
+  AuxHistoryKeys["4536:0"] = "1788418800##250@1788332400"   -- nothing seen today
+  OctoKillValue_ResetAux()
+  ChatLog = {}
+  okv("id 6")
+  check("empty today field is skipped (250 from the one pushed day)", math.abs(total() - (gold6 + appleQty * 250)) <= 1)
+  AuxHistoryKeys = NewHistoryKeys()
+  OctoKillValue_ResetAux()
+  ChatLog = {}
+  okv("id 6")
+  check("item absent from history: no price, no API decode", chatHas("have no known price") ~= nil and apiCalls == 0)
+  AuxDays["4536:0"] = { { value = 400 } }   -- key reads as `true`: not a packed string
+  OctoKillValue_ResetAux()
+  ChatLog = {}
+  okv("id 6")
+  check("record not in packed form falls back to the API", math.abs(total() - (gold6 + appleQty * 400)) <= 1 and apiCalls > 0)
+  require = origRequire
+  AuxDays = {}
+end
+-- (2) prices are flushed when the auction house closes after listings
+--     arrived (a scan), not on a timer
+do
+  AuxHistoryKeys = NewHistoryKeys({ ["4536:0"] = "1#100#" })
+  OctoKillValue_ResetAux()
+  hover("mouseover", KOBOLD, "Kobold Vermin")
+  local before = findLine("^Kill value")
+  AuxHistoryKeys["4536:0"] = "1#9000#"
+  FireEvent("AUCTION_HOUSE_CLOSED")
+  hover("mouseover", KOBOLD, "Kobold Vermin")
+  check("AH close without listings keeps the cache", findLine("^Kill value") == before)
+  FireEvent("AUCTION_ITEM_LIST_UPDATE")
+  FireEvent("AUCTION_HOUSE_CLOSED")
+  hover("mouseover", KOBOLD, "Kobold Vermin")
+  check("AH close after a listing update re-prices", findLine("^Kill value") ~= before)
+  -- the suffix index is (re)built at login / AH close, never inside a hover
+  AuxHistoryKeys = NewHistoryKeys({ ["4536:12"] = "1#200#" })
+  OctoKillValue_ResetAux()
+  FireEvent("PLAYER_ENTERING_WORLD")
+  AuxHistoryKeys["4536:13"] = "1#900#"
+  AuxHistoryKeys["4536:14"] = "1#950#"
+  ChatLog = {}
+  okv("id 6")
+  check("suffix index built at PLAYER_ENTERING_WORLD is used as-is by a hover (200)", math.abs(total() - (gold6 + appleQty * 200)) <= 1)
+  FireEvent("AUCTION_ITEM_LIST_UPDATE")
+  FireEvent("AUCTION_HOUSE_CLOSED")
+  ChatLog = {}
+  okv("id 6")
+  check("AH close rebuilds the suffix index (median of 200/900/950 = 900)", math.abs(total() - (gold6 + appleQty * 900)) <= 1)
+  AuxHistoryKeys = NewHistoryKeys()
+  OctoKillValue_ResetAux()
+end
+-- (3) the per-creature breakdown cache is bounded: at most 64 creatures,
+--     each keeping only the lines a tooltip or report can show
+do
+  OctoKillValue_ResetAux()
+  local n = 0
+  for id in pairs(OKV_MOB) do
+    hover("mouseover", format("0xF130%06X000001", id), "creature " .. id)
+    n = n + 1
+    if n >= 80 then break end
+  end
+  local count, maxTop, maxRare = OctoKillValue_CacheStats()
+  check("80 distinct creatures hovered: cache holds at most 64 (" .. count .. ")", count >= 1 and count <= 64)
+  check("cached breakdowns keep at most max(10, detail) top lines (" .. maxTop .. ")", maxTop <= math.max(10, OctoKillValueDB.detail))
+  check("cached breakdowns keep at most 5 rare lines (" .. maxRare .. ")", maxRare <= 5)
+end
 
 print(passed .. " passed, " .. failed .. " failed")
 if failed > 0 then error("behavior checks failed") end

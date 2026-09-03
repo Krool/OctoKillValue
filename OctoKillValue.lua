@@ -82,13 +82,18 @@ end
 -- Re-detect aux (e.g. after it loads late); also used by the test harness.
 local suffixIndex = nil
 local computeCache = {}
+local computeCount = 0
 -- price cache as three flat maps (one table per entry was itself memory
 -- pressure on the client's fixed Lua pool during a zone report)
-local priceT, priceP, priceS = {}, {}, {}   -- itemId -> time / price / source (30s, see CACHE_TTL)
+local priceT, priceP, priceS = {}, {}, {}   -- itemId -> time / price / source (see PRICE_TTL)
 local zoneIndex = {}   -- zone id -> creature ids with data (see ZoneCreatures)
-local function ClearCaches()
+local function ClearPriceCaches()
   computeCache = {}
+  computeCount = 0
   priceT, priceP, priceS = {}, {}, {}
+end
+local function ClearCaches()
+  ClearPriceCaches()
   zoneIndex = {}
 end
 function OctoKillValue_ResetAux()
@@ -97,11 +102,58 @@ function OctoKillValue_ResetAux()
   suffixIndex = nil
   ClearCaches()
 end
+-- creatures cached, largest top / rare list held (test harness, /okv mem)
+function OctoKillValue_CacheStats()
+  local maxTop, maxRare = 0, 0
+  for _, hit in pairs(computeCache) do
+    maxTop = math.max(maxTop, table.getn(hit.acc.top))
+    maxRare = math.max(maxRare, table.getn(hit.acc.raretop))
+  end
+  return computeCount, maxTop, maxRare
+end
+
+-- aux's per-faction history table: key "id:suffix" -> packed record string.
+local function AuxHistoryTable()
+  local aux = AuxModule("aux")
+  local hist = aux and type(aux.faction_data) == "table" and aux.faction_data.history
+  if type(hist) == "table" then return hist end
+  return nil
+end
+
+-- aux stores each history record as ONE packed string (util/persistence,
+-- schema in core/history.lua): "<next_push>#<daily_min_buyout>#<v>@<t>;<v>@<t>..."
+-- and its data_points()/market_value() decode that string through
+-- split/map temp tables on EVERY call - nothing is cached. Pricing a
+-- world-drop pool is hundreds of those decodes, and suffix gear up to 16
+-- keys each, all inside one tooltip event: that was the frozen frame on
+-- hover. Read the string directly (one find + one gfind, no aux calls);
+-- returns today's min buyout (or nil) and the "v@t;..." tail, or nil when
+-- the record is absent or not in that format (the API path handles it).
+local function RawRecord(key)
+  local hist = AuxHistoryTable()
+  if not hist then return nil end
+  local raw = hist[key]
+  if raw == nil then return nil, "" end          -- no record: nothing to decode
+  if type(raw) ~= "string" then return nil end
+  local _, _, today, points = string.find(raw, "^[^#]*#([^#]*)#(.*)$")
+  if not points then return nil end
+  return tonumber(today), points
+end
 
 -- aux's raw observations for a key: the pushed daily minimum buyouts plus
 -- today's, sorted ascending. Empty when aux has none.
 local function Observations(h, key)
   local vals = {}
+  local today, points = RawRecord(key)
+  if points then
+    for v in string.gfind(points, "([^@;]+)@[^;]*") do
+      local n = tonumber(v)
+      if n then table.insert(vals, n) end
+    end
+    if today then table.insert(vals, today) end
+    table.sort(vals)
+    return vals
+  end
   if type(h.data_points) == "function" then
     local ok, pts = pcall(h.data_points, key)
     if ok and type(pts) == "table" then
@@ -126,9 +178,14 @@ end
 local function AuxKeyPrice(h, key)
   local v, days
   if cfg.price == "today" then
-    if type(h.market_value) ~= "function" then return nil end
-    local ok, t = pcall(h.market_value, key)
-    if ok and type(t) == "number" then v = t end
+    local today, points = RawRecord(key)
+    if points then
+      v = today
+    else
+      if type(h.market_value) ~= "function" then return nil end
+      local ok, t = pcall(h.market_value, key)
+      if ok and type(t) == "number" then v = t end
+    end
     days = v and 1 or 0
   else
     local vals = Observations(h, key)
@@ -149,23 +206,28 @@ local function AuxKeyPrice(h, key)
 end
 
 -- Random-suffix gear ("of the Bear") is auctioned under "id:suffix" keys;
--- the base "id:0" rarely has history. Index aux's faction history once.
-local function SuffixKeys(itemId)
-  if not suffixIndex then
-    local aux = AuxModule("aux")
-    local hist = aux and type(aux.faction_data) == "table" and aux.faction_data.history
-    if type(hist) ~= "table" then return nil end -- aux not through LOAD2 yet; retry later
-    suffixIndex = {}
-    for key in pairs(hist) do
-      local _, _, id, suf = string.find(key, "^(%d+):(%-?%d+)$")
-      if id and suf ~= "0" then
-        id = tonumber(id)
-        local list = suffixIndex[id]
-        if not list then list = {}; suffixIndex[id] = list end
-        if table.getn(list) < 16 then table.insert(list, key) end
-      end
+-- the base "id:0" rarely has history. Index aux's faction history once:
+-- a walk over every key (37k on a well-scanned account, 27k of them suffix
+-- keys) that belongs at login / auction-house close, not inside a hover.
+local function BuildSuffixIndex()
+  local hist = AuxHistoryTable()
+  if not hist then return false end -- aux not through LOAD2 yet; retry later
+  local index = {}
+  for key in pairs(hist) do
+    local _, _, id, suf = string.find(key, "^(%d+):(%-?%d+)$")
+    if id and suf ~= "0" then
+      id = tonumber(id)
+      local list = index[id]
+      if not list then list = {}; index[id] = list end
+      if table.getn(list) < 16 then table.insert(list, key) end
     end
   end
+  suffixIndex = index
+  return true
+end
+
+local function SuffixKeys(itemId)
+  if not suffixIndex and not BuildSuffixIndex() then return nil end
   return suffixIndex[itemId]
 end
 
@@ -214,9 +276,23 @@ end
 local ParsePairs -- forward declaration (defined in the data section)
 local contentsCache = {}
 
-local CACHE_TTL = 30        -- per-creature breakdowns (tooltips)
-local PRICE_TTL = 30        -- per-item prices; same horizon so a fresh AH scan
-                            -- reaches tooltips within 30s (tested)
+-- Prices only change when aux writes history: an auction-house scan (the
+-- AH must be open, so the caches are flushed on AUCTION_HOUSE_CLOSED after
+-- any listing update - a fresh scan reaches tooltips the moment you leave
+-- the AH), aux's midnight push, or LFT channel sharing. The time limits
+-- only cover the last two; the old 30s expiry re-priced every drop of a
+-- re-hovered creature twice a minute for nothing, and each re-price was
+-- the frozen frame described at RawRecord.
+local CACHE_TTL = 600       -- per-creature breakdowns (tooltips)
+local PRICE_TTL = 600       -- per-item prices (same horizon: a breakdown is
+                            -- never fresher than the prices under it)
+-- Breakdowns are cached per creature; keep only what a tooltip or /okv
+-- report can show (top max(10, detail) + 5 rare lines) and cap the number
+-- of creatures held - a session that hovers hundreds of distinct creatures
+-- must not accumulate hundreds of {id, qty, value, src} tables per creature
+-- in the client's fixed Lua pool (the /okv zone lesson, applied to hover).
+local CACHE_MAX = 64
+local REPORT_TOP, REPORT_RARE = 10, 5
 
 local PriceUncached
 -- Cached per item (top level only - container contents are priced with a
@@ -374,6 +450,14 @@ local function Compute(entry)
   table.sort(acc.raretop, byValue)
   acc.byItem = nil
   acc.all = nil
+  -- drop the tail nothing displays (table.remove from the end: no shifting)
+  local keepTop = math.max(REPORT_TOP, cfg.detail or 0)
+  while table.getn(acc.top) > keepTop do table.remove(acc.top) end
+  while table.getn(acc.raretop) > REPORT_RARE do table.remove(acc.raretop) end
+  if not computeCache[entry] then
+    if computeCount >= CACHE_MAX then computeCache = {}; computeCount = 0 end
+    computeCount = computeCount + 1
+  end
   computeCache[entry] = { t = now, acc = acc }
   return acc
 end
@@ -526,10 +610,13 @@ local function Status(verbose)
 end
 
 local announced = false
+local auctionDirty = false   -- listings arrived while the AH was open (scan/search)
 frame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
 frame:RegisterEvent("VARIABLES_LOADED")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("SKILL_LINES_CHANGED")
+frame:RegisterEvent("AUCTION_ITEM_LIST_UPDATE")
+frame:RegisterEvent("AUCTION_HOUSE_CLOSED")
 frame:SetScript("OnEvent", function()
   if event == "VARIABLES_LOADED" then
     InitConfig()
@@ -542,8 +629,18 @@ frame:SetScript("OnEvent", function()
         Print("loaded. Hover a creature for its kill value; /okv for commands.")
       end
     end
+    -- the 37k-key walk happens here (a loading screen), not on first hover
+    if not suffixIndex then BuildSuffixIndex() end
   elseif event == "SKILL_LINES_CHANGED" then
     skillCache = {}
+  elseif event == "AUCTION_ITEM_LIST_UPDATE" then
+    auctionDirty = true
+  elseif event == "AUCTION_HOUSE_CLOSED" then
+    if auctionDirty then
+      auctionDirty = false
+      ClearPriceCaches()
+      BuildSuffixIndex()   -- a scan can add suffix keys the index has not seen
+    end
   elseif event == "UPDATE_MOUSEOVER_UNIT" then
     if cfg and GameTooltip:IsVisible() then AddTooltipLines(GameTooltip, "mouseover") end
   end
@@ -593,8 +690,8 @@ local GC_BUDGET_KB = 2048
 -- Kill value for the zone report only: same total as Compute() (coins +
 -- non-rare loot) but RETAINS NOTHING - no compute-cache entry, no mob-cache
 -- entry, no per-item tables. A zone is 100-200 creatures; caching each
--- one's full breakdown for 30s is what pushed Mulgore over the client's
--- fixed Lua pool (lmemPool.cpp crash, 2026-09-02) even with periodic GC.
+-- one's full breakdown is what pushed Mulgore over the client's fixed
+-- Lua pool (lmemPool.cpp crash, 2026-09-02) even with periodic GC.
 local function ZoneValue(entry, includeElite)
   local m = mobCache[entry]
   if m == nil then
@@ -735,7 +832,9 @@ SlashCmdList["OCTOKILLVALUE"] = function(msg)
   elseif cmd == "mem" then
     if gcinfo then
       local used, threshold = gcinfo()
-      Print(format("Lua heap: %d KB in use, next automatic sweep at %s KB", used, tostring(threshold)))
+      local cached = OctoKillValue_CacheStats()
+      Print(format("Lua heap: %d KB in use, next automatic sweep at %s KB; %d creature breakdown(s) cached",
+        used, tostring(threshold), cached))
     else Print("gcinfo() unavailable") end
   elseif cmd == "hello" then Toggle("hello", "login message")
   elseif cmd == "config" then
